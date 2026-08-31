@@ -29,6 +29,7 @@ import {
 import {
   beginFigmaRestOAuth,
   clearFigmaRestOAuth,
+  connectFigmaRestPat,
   figmaRestOAuthStatus,
   finishFigmaRestOAuth,
 } from "./figma-rest-client.js";
@@ -798,6 +799,18 @@ app.get("/api/figma/rest/auth/callback", async (req, res) => {
     clearFigmaRestOAuth(session);
     res.redirect(`${APP_ORIGIN}/figma?restAuth=error&reason=${encodeURIComponent(error instanceof Error ? error.message : String(error))}`);
   }
+});
+
+// 파일럿은 이 경로를 쓴다. 사용자가 Figma에서 scope를 지정해 발급한 토큰을 붙여넣으며,
+// 토큰은 파일이나 브라우저 저장소가 아니라 API 서버 세션 메모리에만 둔다.
+app.post("/api/figma/rest/auth/pat", async (req, res, next) => {
+  const session = getSession(req, res).figma.rest;
+  const token = typeof req.body?.token === "string" ? req.body.token.trim() : "";
+  if (!token) return res.status(400).json({ message: "Figma 개인 액세스 토큰을 입력해 주세요." });
+  try {
+    await connectFigmaRestPat(session, token);
+    res.json({ ...figmaRestOAuthStatus(session), authKind: "pat" });
+  } catch (error) { next(error); }
 });
 
 app.post("/api/figma/rest/auth/logout", (req, res) => {

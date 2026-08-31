@@ -125,9 +125,9 @@ Codex의 `get_screenshot`이 짧은 수명의 Figma `image_url`을 반환하면 
 2. 열린 Design 또는 FigJam 파일에서 개발 플러그인을 실행하고 코드를 입력합니다.
 3. 추출할 프레임이나 레이어를 선택하고 macOS는 `Command L`, Windows는 `Ctrl L`을 누릅니다. 우클릭 메뉴의 `Copy/Paste as → Copy link to selection`을 사용해도 됩니다.
 4. `노드 추출`은 복사한 `node-id` 포함 링크를 입력합니다. `현재 페이지 추출`은 링크 없이 Figma에서 열어 둔 페이지를 사용합니다.
-5. 버전 변화도 필요하면 별도의 `Figma 버전 이력 OAuth 연결`을 완료합니다.
+5. `Figma 개인 액세스 토큰으로 연결`에 토큰을 붙여넣어 파일 메타데이터 연결을 완료합니다.
 
-NH Plugin 추출에서는 REST OAuth가 필수입니다. OAuth scope는 `current_user:read`, `file_content:read`, `file_metadata:read`, `file_comments:read`, `file_versions:read`이며 파일 생성자·최근 수정자·전체 댓글·버전 작성자 원문을 ZIP의 `metadata/`에 보존합니다. 버전 작성자는 버전 생성자이며 개별 클릭이나 노드 변경의 정확한 작성자로 단정하지 않습니다.
+NH Plugin 추출에서는 REST 인증이 필수입니다. Figma 계정 메뉴의 `Settings → Security → Personal access tokens`에서 만료와 scope를 지정해 토큰을 발급하고 Trace Studio에 붙여넣습니다. 필요한 scope는 `current_user:read`, `file_content:read`, `file_metadata:read`, `file_comments:read`, `file_versions:read`이며 파일 생성자·최근 수정자·전체 댓글·버전 작성자 원문을 ZIP의 `metadata/`에 보존합니다. 토큰은 브라우저 저장소나 파일에 기록하지 않고 API 서버 세션 메모리에만 둡니다. 버전 작성자는 버전 생성자이며 개별 클릭이나 노드 변경의 정확한 작성자로 단정하지 않습니다.
 
 현재 페이지 추출은 페이지를 최상위 프레임 단위로 나눠 `nodes/*.json`, `screenshots/*.png`, `assets/*`로 전송합니다. 제한을 넘거나 렌더링할 수 없는 프레임은 `page.json`에 `partial`, `omittedNodes`, `error`를 남기며 완전한 결과처럼 표시하지 않습니다.
 
@@ -296,9 +296,9 @@ Slack:
 | `APP_ORIGIN` | 개발 `http://127.0.0.1:5173` | OAuth 뒤 돌아올 Web 주소 |
 | `CODEX_BRIDGE_MODEL` | `gpt-5.5` | Codex Bridge에서 사용할 로컬 Codex 모델 |
 | `CODEX_BRIDGE_REASONING` | `low` | Codex Bridge reasoning effort |
-| `FIGMA_REST_BROKER_URL` | 없음 | 배포한 Figma REST OAuth broker 공개 주소 |
+| `FIGMA_REST_BROKER_URL` | 없음 | broker 경유 OAuth를 쓸 때만 필요합니다. 파일럿은 개인 액세스 토큰을 쓰므로 비워 둡니다 |
 
-`oauth-broker/`에는 `FIGMA_REST_CLIENT_ID`, `FIGMA_REST_CLIENT_SECRET`, `BROKER_TICKET_SECRET`, `LOCAL_CALLBACK_ORIGIN`을 Vercel 비밀값으로 등록합니다. 선택적으로 `BROKER_PUBLIC_ORIGIN`을 고정할 수 있습니다. 자세한 내용은 [OAuth broker 안내](oauth-broker/README.md)를 봅니다.
+`oauth-broker/`는 배포하지 않은 대안 경로입니다. Figma REST OAuth는 `client_secret`을 요구하는데 앱이 담당자 PC에서 실행되므로 secret을 그 PC에 둘 수 없어, 코드·토큰 교환만 대신하는 broker가 필요했습니다. 현재는 scope를 지정할 수 있는 개인 액세스 토큰을 쓰므로 외부에 배포하는 구성요소가 없습니다. 조직 정책이 개인 토큰 발급을 막는 경우에만 broker를 배포하고 `FIGMA_REST_CLIENT_ID`, `FIGMA_REST_CLIENT_SECRET`, `BROKER_TICKET_SECRET`, `LOCAL_CALLBACK_ORIGIN`, `BROKER_PUBLIC_ORIGIN`을 등록합니다. 자세한 내용은 [OAuth broker 안내](oauth-broker/README.md)를 봅니다.
 
 ## 검증
 

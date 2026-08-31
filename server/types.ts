@@ -381,6 +381,8 @@ export type SlackRunRecord = RunRecord<SlackExtractionInput> & {
 };
 
 export type FigmaRestOAuthSession = {
+  /** oauth는 broker 경유 인증, pat는 사용자가 붙여넣은 개인 액세스 토큰. */
+  kind?: "oauth" | "pat";
   redeemSecret?: string;
   accessToken?: string;
   expiresAt?: number;

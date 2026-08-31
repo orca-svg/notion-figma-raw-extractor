@@ -164,6 +164,9 @@ button:disabled { cursor: not-allowed; opacity: .46; }
 .connected-card .small-copy { color: var(--muted); margin-bottom: 9px; }
 .pat-box, .advanced-options { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 11px; }
 .pat-box summary, .advanced-options summary { cursor: pointer; color: var(--provider); font-size: 11px; font-weight: 760; }
+.scope-list { margin: 6px 0 10px; padding-left: 14px; display: grid; gap: 2px; }
+.scope-list li { color: var(--muted); font-size: 10px; line-height: 1.5; }
+.scope-list code { font-size: 10px; }
 .pat-box > p, .demo-note, .connection-instructions p, .connection-detail { color: var(--muted); font-size: 10px; line-height: 1.55; }
 .demo-note { margin: 8px 0 0; }
 .connection-instructions ol { margin: 0 0 13px; padding-left: 19px; color: #565d6b; font-size: 11px; line-height: 1.8; }

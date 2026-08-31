@@ -6,8 +6,8 @@ import { FigmaPluginBridge } from "../server/figma-plugin-bridge.js";
 import { runPluginFigmaExtraction } from "../server/figma-plugin-extract.js";
 import { buildFigmaRunZip, createFigmaRun, upsertRunEvent } from "../server/figma-run-store.js";
 import { codexQuestionFailureMessage, normalizeCodexBridgeAnswer } from "../server/figma-question.js";
-import { FigmaRestApiError, figmaRestJson } from "../server/figma-rest-client.js";
-import type { FigmaExtractionInput, FigmaVersionSnapshot } from "../server/types.js";
+import { connectFigmaRestPat, figmaRestOAuthStatus, FigmaRestApiError, figmaRestJson } from "../server/figma-rest-client.js";
+import type { FigmaExtractionInput, FigmaRestOAuthSession, FigmaVersionSnapshot } from "../server/types.js";
 import { openTicket, sealTicket, sha256Base64Url, verifyRedeemSecret } from "../oauth-broker/lib/tickets.js";
 import { localCallbackOrigin, requiredEnv } from "../oauth-broker/lib/http.js";
 import prepareOAuth from "../oauth-broker/api/oauth/prepare.js";
@@ -381,6 +381,41 @@ describe("Figma REST failure handling", () => {
     const error = await figmaRestJson({ accessToken: "access", expiresAt: Date.now() + 10 * 60_000 }, "/files/file").then(() => undefined, (reason) => reason as FigmaRestApiError);
     expect(error).toMatchObject({ status: 429, retryAfter: 12, upgradeUrl: "https://figma.com/upgrade" });
     expect(error?.message).toMatch(/12초.*업그레이드 안내/);
+  });
+});
+
+describe("Figma 개인 액세스 토큰 연결", () => {
+  it("PAT는 X-Figma-Token으로, OAuth access token은 Bearer로 보낸다", async () => {
+    const patFetch = vi.fn(async (_url: string, _init?: RequestInit) => Response.json({ id: "user-9", handle: "designer" }));
+    vi.stubGlobal("fetch", patFetch);
+    const patSession: FigmaRestOAuthSession = {};
+    await connectFigmaRestPat(patSession, "  figd_token  ");
+    expect(patSession).toMatchObject({ kind: "pat", accessToken: "figd_token", userId: "user-9" });
+    expect(figmaRestOAuthStatus(patSession)).toMatchObject({ connected: true, authKind: "pat" });
+    expect(patFetch.mock.calls[0][0]).toBe("https://api.figma.com/v1/me");
+    expect(patFetch.mock.calls[0][1]?.headers).toMatchObject({ "X-Figma-Token": "figd_token" });
+
+    const oauthFetch = vi.fn(async (_url: string, _init?: RequestInit) => Response.json({ ok: true }));
+    vi.stubGlobal("fetch", oauthFetch);
+    await figmaRestJson({ kind: "oauth", accessToken: "access", expiresAt: Date.now() + 10 * 60_000 }, "/files/file");
+    expect(oauthFetch.mock.calls[0][1]?.headers).toMatchObject({ Authorization: "Bearer access" });
+  });
+
+  it("유효하지 않은 토큰은 세션에 남기지 않는다", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ message: "Invalid token" }), { status: 403 })));
+    const session: FigmaRestOAuthSession = {};
+    await expect(connectFigmaRestPat(session, "figd_bad")).rejects.toThrow(/토큰을 확인하지 못했습니다.*Invalid token/);
+    expect(session).toMatchObject({ kind: undefined, accessToken: undefined });
+    expect(figmaRestOAuthStatus(session).connected).toBe(false);
+  });
+
+  it("PAT 세션은 refresh를 시도하지 않고 재발급을 안내한다", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    // 만료된 PAT: refreshGrant가 없으므로 예전 경로였다면 "OAuth 연결이 필요합니다"가 났다.
+    await expect(figmaRestJson({ kind: "pat", accessToken: "figd_old", expiresAt: Date.now() - 1000 }, "/me"))
+      .rejects.toThrow(/새로 발급/);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

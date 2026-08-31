@@ -12,7 +12,7 @@ type Props = {
   onCodexFigmaOAuth: () => Promise<CodexAuthFlow>;
   onCodexCancel: () => Promise<void>;
   onPluginPair: () => Promise<PluginPairing>;
-  onRestOAuth: () => Promise<void>;
+  onRestPat: (token: string) => Promise<void>;
   onRestDisconnect: () => Promise<void>;
   busy: boolean;
 };
@@ -54,9 +54,10 @@ function identityLabel(value: unknown): string | undefined {
   return undefined;
 }
 
-export function FigmaConnectionPanel({ statuses, transport, onTransportChange, onRefresh, onOAuth, onDisconnect, onCodexLogin, onCodexFigmaOAuth, onCodexCancel, onPluginPair, onRestOAuth, onRestDisconnect, busy }: Props) {
+export function FigmaConnectionPanel({ statuses, transport, onTransportChange, onRefresh, onOAuth, onDisconnect, onCodexLogin, onCodexFigmaOAuth, onCodexCancel, onPluginPair, onRestPat, onRestDisconnect, busy }: Props) {
   const [error, setError] = useState<string>();
   const [pairing, setPairing] = useState<PluginPairing>();
+  const [restPat, setRestPat] = useState("");
   const status = statuses[transport];
   const handle = async (action: () => Promise<void>) => {
     setError(undefined);
@@ -148,7 +149,7 @@ export function FigmaConnectionPanel({ statuses, transport, onTransportChange, o
               <span>01</span><p><strong>Plugin</strong><small>{status.plugin?.connected ? "페어링됨" : "6자리 코드 필요"}</small></p><i aria-hidden="true" />
             </div>
             <div className={status.restOAuth?.connected ? "ready" : "waiting"}>
-              <span>02</span><p><strong>파일 메타데이터</strong><small>{status.restOAuth?.connected ? "댓글·작성자·버전 연결됨" : "필수 OAuth"}</small></p><i aria-hidden="true" />
+              <span>02</span><p><strong>파일 메타데이터</strong><small>{status.restOAuth?.connected ? "댓글·작성자·버전 연결됨" : "개인 액세스 토큰 필요"}</small></p><i aria-hidden="true" />
             </div>
           </div>
           {status.plugin?.connected ? (
@@ -167,11 +168,34 @@ export function FigmaConnectionPanel({ statuses, transport, onTransportChange, o
             <button className="primary-button full figma-primary" type="button" onClick={() => void createPairing()} disabled={busy}>6자리 페어링 코드 만들기</button>
           )}
           <div className="plugin-rest-actions">
-            {status.restOAuth?.connected ? <button className="secondary-button full" type="button" onClick={() => void handle(async () => { await onRestDisconnect(); await onRefresh("plugin"); })} disabled={busy}>메타데이터 연결 해제</button>
-              : <button className="secondary-button full" type="button" onClick={() => void handle(onRestOAuth)} disabled={busy}>Figma 메타데이터 OAuth 연결</button>}
+            {status.restOAuth?.connected ? (
+              <button className="secondary-button full" type="button" onClick={() => void handle(async () => { await onRestDisconnect(); await onRefresh("plugin"); })} disabled={busy}>메타데이터 연결 해제</button>
+            ) : (
+              <details className="pat-box" open>
+                <summary>Figma 개인 액세스 토큰으로 연결</summary>
+                <p>Figma 계정 메뉴 → Settings → Security → Personal access tokens에서 만료와 아래 scope를 지정해 발급하세요. 토큰은 생성 직후에만 보입니다.</p>
+                <ul className="scope-list">
+                  <li><code>current_user:read</code></li>
+                  <li><code>file_content:read</code></li>
+                  <li><code>file_metadata:read</code></li>
+                  <li><code>file_comments:read</code></li>
+                  <li><code>file_versions:read</code></li>
+                </ul>
+                <label className="field compact">
+                  <span>Personal access token</span>
+                  <input type="password" value={restPat} onChange={(event) => setRestPat(event.target.value)} autoComplete="off" placeholder="figd_…" />
+                </label>
+                <button
+                  className="secondary-button full"
+                  type="button"
+                  onClick={() => void handle(async () => { await onRestPat(restPat); setRestPat(""); await onRefresh("plugin"); })}
+                  disabled={!restPat || busy}
+                >토큰 확인 후 연결</button>
+              </details>
+            )}
             <button className="text-button" type="button" onClick={() => void handle(() => onRefresh("plugin"))} disabled={busy}>연결 상태 다시 확인</button>
           </div>
-          <p className="credential-note">OAuth 브로커는 토큰 교환만 처리하며 파일·노드·이미지는 로컬에서 Figma API와 직접 주고받습니다.</p>
+          <p className="credential-note">토큰은 서버 세션 메모리에만 두며 파일이나 브라우저 저장소에 쓰지 않습니다. 파일·노드·이미지는 로컬에서 Figma API와 직접 주고받습니다.</p>
           {status.message ? <p className="connection-detail">{status.message}</p> : null}
         </div>
       ) : status.connected ? (

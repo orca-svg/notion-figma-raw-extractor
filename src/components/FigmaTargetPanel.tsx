@@ -95,10 +95,10 @@ export function FigmaTargetPanel({ options, onChange, onRun, onAsk, running, con
         <p className="run-blocker-note" role="status"><strong>연결은 완료됐습니다.</strong> Figma에서 추출할 프레임이나 레이어를 선택해 링크를 복사한 뒤 위 입력란에 붙여넣으세요.</p>
       ) : null}
 
-      {options.transport === "plugin" && !metadataConnected ? <p className="run-blocker-note" role="status"><strong>메타데이터 OAuth가 필요합니다.</strong> 파일 생성자·댓글·버전 작성자를 빠짐없이 포함하기 위해 위 연결 단계에서 OAuth를 완료하세요.</p> : null}
+      {options.transport === "plugin" && !metadataConnected ? <p className="run-blocker-note" role="status"><strong>파일 메타데이터 연결이 필요합니다.</strong> 파일 생성자·댓글·버전 작성자를 빠짐없이 포함하기 위해 위 연결 단계에서 Figma 개인 액세스 토큰을 붙여넣으세요.</p> : null}
 
       <button className="primary-button figma-primary full" type="button" onClick={() => onRun("live")} disabled={!canRun || running}>
-        {running ? "추출 실행 중" : connected && pluginReady ? options.scope === "current_page" ? "현재 페이지 전체를 ZIP으로 추출" : options.transport === "codex" ? "Codex를 통해 읽기" : options.transport === "plugin" ? "Plugin으로 최신 노드 추출" : "실제 Figma MCP로 읽기" : options.transport === "plugin" && !metadataConnected ? "메타데이터 OAuth를 연결하세요" : `${options.transport === "desktop" ? "Desktop" : options.transport === "remote" ? "Remote" : options.transport === "plugin" ? "Plugin" : "Codex"} 연결을 확인하세요`}
+        {running ? "추출 실행 중" : connected && pluginReady ? options.scope === "current_page" ? "현재 페이지 전체를 ZIP으로 추출" : options.transport === "codex" ? "Codex를 통해 읽기" : options.transport === "plugin" ? "Plugin으로 최신 노드 추출" : "실제 Figma MCP로 읽기" : options.transport === "plugin" && !metadataConnected ? "파일 메타데이터 토큰을 연결하세요" : `${options.transport === "desktop" ? "Desktop" : options.transport === "remote" ? "Remote" : options.transport === "plugin" ? "Plugin" : "Codex"} 연결을 확인하세요`}
       </button>
       {options.scope === "node" && (options.transport === "codex" || options.transport === "plugin") ? <div className="question-actions"><button className="question-button" type="button" onClick={() => onAsk()} disabled={!canAsk || running}>{running ? "최신 근거 수집 중" : "최신 정보로 질문"}</button><button className="meaning-button" type="button" onClick={() => onAsk("이 노드가 제품에서 담당하는 역할, 핵심 사용자 행동, 정보 구조와 의도를 근거와 불확실성을 구분해 해석해 줘.")} disabled={!canInterpret || running}>제품 의미 해석</button></div> : null}
       <button className="demo-button figma-demo full" type="button" onClick={() => onRun("demo")} disabled={running}>Design 예제로 전체 여정 보기</button>

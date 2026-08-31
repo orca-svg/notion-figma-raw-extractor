@@ -66,13 +66,37 @@ export async function beginFigmaRestOAuth(session: FigmaRestOAuthSession): Promi
 export async function finishFigmaRestOAuth(session: FigmaRestOAuthSession, ticket: string): Promise<void> {
   if (!session.redeemSecret) throw new Error("Figma REST OAuth 시작 세션이 없습니다.");
   const tokens = await brokerJson<BrokerTokens>("/api/oauth/redeem", { ticket, redeemSecret: session.redeemSecret });
+  session.kind = "oauth";
   session.accessToken = tokens.accessToken;
   session.expiresAt = Date.now() + Math.max(30, tokens.expiresIn) * 1000;
   session.refreshGrant = tokens.refreshGrant;
   session.userId = tokens.userId;
 }
 
+/**
+ * 개인 액세스 토큰으로 연결한다. broker도 client_secret도 필요 없고,
+ * 토큰에 담긴 scope가 곧 접근 범위다. /v1/me로 유효성과 사용자만 확인한 뒤 세션에 둔다.
+ */
+export async function connectFigmaRestPat(session: FigmaRestOAuthSession, token: string): Promise<{ userId?: string }> {
+  const trimmed = token.trim();
+  if (!trimmed) throw new Error("Figma 개인 액세스 토큰을 입력해 주세요.");
+  clearFigmaRestOAuth(session);
+  session.kind = "pat";
+  session.accessToken = trimmed;
+  try {
+    const me = await figmaRestJson<{ id?: string; handle?: string; email?: string }>(session, "/me");
+    session.userId = me.id;
+    return { userId: me.id };
+  } catch (error) {
+    clearFigmaRestOAuth(session);
+    // /me 단계의 실패는 파일 권한이 아니라 토큰 자체의 문제다. 원문은 뒤에 붙여 진단을 남긴다.
+    const detail = error instanceof FigmaRestApiError ? error.message.replace(/^[^.]*\.\s*/, "") : error instanceof Error ? error.message : String(error);
+    throw new Error(`Figma 개인 액세스 토큰을 확인하지 못했습니다. 토큰과 scope를 다시 확인해 주세요.${detail ? ` (${detail})` : ""}`);
+  }
+}
+
 export function clearFigmaRestOAuth(session: FigmaRestOAuthSession): void {
+  session.kind = undefined;
   session.redeemSecret = undefined;
   session.accessToken = undefined;
   session.expiresAt = undefined;
@@ -81,11 +105,17 @@ export function clearFigmaRestOAuth(session: FigmaRestOAuthSession): void {
 }
 
 export function figmaRestOAuthStatus(session: FigmaRestOAuthSession) {
-  return { connected: Boolean(session.accessToken || session.refreshGrant), userId: session.userId };
+  return {
+    connected: Boolean(session.accessToken || session.refreshGrant),
+    userId: session.userId,
+    authKind: session.kind,
+  };
 }
 
 async function ensureAccessToken(session: FigmaRestOAuthSession): Promise<string> {
   if (session.accessToken && (!session.expiresAt || session.expiresAt - Date.now() > 5 * 60 * 1000)) return session.accessToken;
+  // PAT는 갱신 개념이 없다. 만료됐다면 사용자가 Figma에서 새로 발급해야 한다.
+  if (session.kind === "pat") throw new Error("Figma 개인 액세스 토큰이 만료되었거나 유효하지 않습니다. 새로 발급해 다시 연결해 주세요.");
   if (!session.refreshGrant || !session.redeemSecret) throw new Error("Figma REST OAuth 연결이 필요합니다.");
   try {
     const tokens = await brokerJson<BrokerTokens>("/api/oauth/refresh", {
@@ -105,8 +135,12 @@ async function ensureAccessToken(session: FigmaRestOAuthSession): Promise<string
 
 export async function figmaRestJson<T>(session: FigmaRestOAuthSession, path: string, signal?: AbortSignal): Promise<T> {
   const accessToken = await ensureAccessToken(session);
+  // 개인 액세스 토큰은 X-Figma-Token, OAuth access token은 Bearer로 보낸다.
+  const auth = session.kind === "pat"
+    ? { "X-Figma-Token": accessToken }
+    : { Authorization: `Bearer ${accessToken}` };
   const response = await fetch(`${FIGMA_API}${path}`, {
-    headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+    headers: { ...auth, Accept: "application/json" },
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000),
   });
   if (!response.ok) {

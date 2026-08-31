@@ -9,7 +9,7 @@ import {
   getFigmaStatus,
   getStatus,
   startFigmaOAuth,
-  startFigmaRestOAuth,
+  connectFigmaRestPat,
   startPluginPairing,
   startCodexFigmaOAuth,
   startCodexLogin,
@@ -254,7 +254,7 @@ export default function App() {
     setStatusLoading(true);
     void Promise.all([refreshNotion(), refreshSlack(), refreshFigma("desktop"), refreshFigma("remote"), refreshFigma("codex"), refreshFigma("plugin")]).finally(() => setStatusLoading(false));
     const params = new URLSearchParams(window.location.search);
-    if (params.get("restAuth") === "error") setFigmaError(params.get("reason") || "Figma 버전 이력 OAuth 연결에 실패했습니다.");
+    if (params.get("restAuth") === "error") setFigmaError(params.get("reason") || "Figma 메타데이터 연결에 실패했습니다.");
     if (window.location.pathname.startsWith("/slack") && params.get("auth") === "error") setSlackError(params.get("reason") || "Slack OAuth 연결에 실패했습니다.");
     if (params.has("auth") || params.has("restAuth")) window.history.replaceState({}, "", window.location.pathname);
   }, [refreshFigma, refreshNotion, refreshSlack]);
@@ -449,7 +449,7 @@ export default function App() {
               <FigmaHistoryCard events={figmaEvents} />
               {figmaError ? <div className="page-error" role="alert">{figmaError}</div> : null}
               <main className="workspace figma-workspace">
-                <aside className="setup-column"><FigmaConnectionPanel statuses={figmaStatuses} transport={figmaOptions.transport} onTransportChange={changeFigmaTransport} onRefresh={refreshFigma} onOAuth={async () => window.location.assign(await startFigmaOAuth())} onDisconnect={async () => { await disconnectFigmaRemote(); await refreshFigma("remote"); setFigmaEvents([]); }} onCodexLogin={startCodexLogin} onCodexFigmaOAuth={startCodexFigmaOAuth} onCodexCancel={cancelCodexAuth} onPluginPair={startPluginPairing} onRestOAuth={async () => window.location.assign(await startFigmaRestOAuth())} onRestDisconnect={disconnectFigmaRest} busy={figmaRunning || statusLoading} /><FigmaTargetPanel options={figmaOptions} onChange={setFigmaOptions} onRun={(mode) => void runFigma(mode)} onAsk={(question) => void askFigma(question)} running={figmaRunning} connected={activeFigmaStatus.connected} metadataConnected={figmaStatuses.plugin.restOAuth?.connected === true} /></aside>
+                <aside className="setup-column"><FigmaConnectionPanel statuses={figmaStatuses} transport={figmaOptions.transport} onTransportChange={changeFigmaTransport} onRefresh={refreshFigma} onOAuth={async () => window.location.assign(await startFigmaOAuth())} onDisconnect={async () => { await disconnectFigmaRemote(); await refreshFigma("remote"); setFigmaEvents([]); }} onCodexLogin={startCodexLogin} onCodexFigmaOAuth={startCodexFigmaOAuth} onCodexCancel={cancelCodexAuth} onPluginPair={startPluginPairing} onRestPat={connectFigmaRestPat} onRestDisconnect={disconnectFigmaRest} busy={figmaRunning || statusLoading} /><FigmaTargetPanel options={figmaOptions} onChange={setFigmaOptions} onRun={(mode) => void runFigma(mode)} onAsk={(question) => void askFigma(question)} running={figmaRunning} connected={activeFigmaStatus.connected} metadataConnected={figmaStatuses.plugin.restOAuth?.connected === true} /></aside>
                 <ExtractionTimeline events={figmaEvents} selectedId={figmaSelected?.id} onSelect={(event) => setFigmaSelectedId(event.id)} running={figmaRunning} provider="figma" />
                 <DataInspector event={figmaSelected} />
               </main>

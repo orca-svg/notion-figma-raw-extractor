@@ -132,6 +132,15 @@ export async function startFigmaRestOAuth(): Promise<string> {
   return (await readJson<{ authUrl: string }>(response)).authUrl;
 }
 
+export async function connectFigmaRestPat(token: string): Promise<void> {
+  const response = await mutate("/api/figma/rest/auth/pat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  await readJson<{ connected: boolean }>(response);
+}
+
 export async function disconnectFigmaRest(): Promise<void> {
   const response = await mutate("/api/figma/rest/auth/logout", { method: "POST" });
   if (!response.ok) throw new Error("Figma REST 연결 해제에 실패했습니다.");

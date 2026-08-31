@@ -89,7 +89,7 @@ export type FigmaConnectionStatus = {
     lastSeenAt?: string;
     meta?: { pluginVersion: string; editorType: "figma" | "figjam"; fileKey?: string; fileName?: string; pageName?: string; user?: { id?: string | null; name?: string } };
   };
-  restOAuth?: { connected: boolean; userId?: string; message?: string };
+  restOAuth?: { connected: boolean; userId?: string; message?: string; authKind?: "oauth" | "pat" };
 };
 
 export type FigmaExtractionOptions = {
