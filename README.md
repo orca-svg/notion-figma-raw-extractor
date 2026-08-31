@@ -1,6 +1,6 @@
 # MCP Trace Studio
 
-Notion과 Figma MCP가 실제로 호출한 Tool의 입력, 원시 응답, 소요 시간, 실패와 생략을 단계별로 확인하는 React 기반 로컬 검사 도구입니다.
+Notion·Figma·Slack의 원문 추출, Tool 입력, 원시 응답, 소요 시간, 실패와 생략을 단계별로 확인하는 React 기반 로컬 검사 도구입니다.
 
 이 프로젝트는 읽기 전용입니다. 도구 안내 화면에는 서버가 제공하는 쓰기 Tool도 표시하지만 추출 경로에서는 호출하지 않습니다.
 
@@ -10,6 +10,8 @@ Notion과 Figma MCP가 실제로 호출한 Tool의 입력, 원시 응답, 소요
 - `/notion/tools`: Notion MCP Tool 지도와 워크스페이스별 가용 상태
 - `/figma`: Figma Desktop/Remote/Codex Bridge/개발 Plugin 연결, Design·FigJam 노드 추출과 근거 기반 질문
 - `/figma/tools`: Desktop/Remote/Codex/Plugin 및 파일 유형별 Figma 읽기 경로 지도
+- `/slack`: 공식 Slack Export ZIP 정규화와 사용자 범위 Slack MCP 조회
+- `/slack/tools`: 관리자 Export와 Slack MCP 역할·Tool 지도
 - `/`와 기존 `/tools`는 각각 `/notion`, `/notion/tools`로 이동합니다.
 
 ## 요구 사항
@@ -27,6 +29,19 @@ nvm use
 npm ci
 npm run dev
 ```
+
+### 내부 파일럿 ZIP
+
+다른 Mac에서 반복 테스트할 때는 저장소 전체를 복사하는 대신 실행 권한과 빌드된 Figma Plugin을 포함한 안전한 ZIP을 만듭니다.
+
+```bash
+npm ci
+npm run package:pilot
+```
+
+결과는 `release/mcp-trace-studio-pilot-v<version>.zip`에 생성됩니다. 패키징은 허용 목록에 있는 파일만 포함하며 `.env`, credential 형태의 문자열, 개인 절대 경로, `node_modules`, 로그를 발견하면 중단합니다.
+
+ZIP 사용자는 [내부 파일럿 시작 안내](PILOT-START.md)에 따라 macOS에서는 `setup.command`, Windows에서는 `setup.ps1`을 실행하고 Figma manifest를 등록합니다. 이후에는 각각 `start.command` 또는 `start.ps1`로 로컬 앱을 시작합니다.
 
 실행 주소:
 
@@ -51,12 +66,16 @@ Notion 모드는 OAuth 또는 개인 토큰을 지원합니다. 토큰은 브라
 
 1. `tools/list`
 2. `fetch({ id: "self" })`
-3. `search`
-4. `fetch(target)`
-5. 데이터 소스와 뷰 조회
-6. SQL 방식 행 조회
-7. 행별 본문 조회
-8. 댓글과 토론 조회
+3. `get_users`와 `get_teams` (기본 꺼짐, `워크스페이스 멤버·팀스페이스 확인`을 켰을 때만)
+4. `search`
+5. `fetch(target)`
+6. 데이터 소스와 뷰 조회
+7. SQL 방식 행 조회
+8. 행별 본문 조회
+9. 댓글과 토론 조회
+10. 첨부 원본 내려받기 (서명 URL 직접 fetch, `origin: "internal"`)
+
+첨부는 만료되는 서명 URL이라 실행 중 즉시 내려받아 실행 artifact로 보관합니다. 인스펙터의 `시각 자료` 탭에서 미리볼 수 있고 ZIP의 `artifacts/assets/`에도 들어갑니다. Notion MCP의 `download_attachment`는 `create-attachment`로 올린 200KiB 이하 텍스트 첨부 전용이라 페이지에 삽입된 이미지에는 쓸 수 없으며, 도구 설명도 서명 URL 사용을 안내합니다. 한 실행에서 최대 12개, 개당 25MB까지 받습니다.
 
 연결이 없어도 26행 CSV fixture로 전체 흐름을 재생할 수 있습니다.
 
@@ -105,8 +124,12 @@ Codex의 `get_screenshot`이 짧은 수명의 Figma `image_url`을 반환하면 
 1. `/figma`에서 `Plugin`을 선택하고 6자리 페어링 코드를 만듭니다.
 2. 열린 Design 또는 FigJam 파일에서 개발 플러그인을 실행하고 코드를 입력합니다.
 3. 추출할 프레임이나 레이어를 선택하고 macOS는 `Command L`, Windows는 `Ctrl L`을 누릅니다. 우클릭 메뉴의 `Copy/Paste as → Copy link to selection`을 사용해도 됩니다.
-4. 복사한 `node-id` 포함 링크를 Trace Studio에 입력해 현재 snapshot·PNG·하위 이미지/SVG를 추출합니다.
+4. `노드 추출`은 복사한 `node-id` 포함 링크를 입력합니다. `현재 페이지 추출`은 링크 없이 Figma에서 열어 둔 페이지를 사용합니다.
 5. 버전 변화도 필요하면 별도의 `Figma 버전 이력 OAuth 연결`을 완료합니다.
+
+NH Plugin 추출에서는 REST OAuth가 필수입니다. OAuth scope는 `current_user:read`, `file_content:read`, `file_metadata:read`, `file_comments:read`, `file_versions:read`이며 파일 생성자·최근 수정자·전체 댓글·버전 작성자 원문을 ZIP의 `metadata/`에 보존합니다. 버전 작성자는 버전 생성자이며 개별 클릭이나 노드 변경의 정확한 작성자로 단정하지 않습니다.
+
+현재 페이지 추출은 페이지를 최상위 프레임 단위로 나눠 `nodes/*.json`, `screenshots/*.png`, `assets/*`로 전송합니다. 제한을 넘거나 렌더링할 수 없는 프레임은 `page.json`에 `partial`, `omittedNodes`, `error`를 남기며 완전한 결과처럼 표시하지 않습니다.
 
 페어링 코드는 5분 동안 유효하고 세션 토큰은 플러그인 메모리에만 남습니다. 연결되면 플러그인 창은 캔버스를 덜 가리도록 `280×176`으로 자동 축소됩니다. 다음 요청을 받으려면 창을 열어 둬야 하며, `X`로 닫으면 다시 열고 새 코드로 페어링해야 합니다. 이미 Trace Studio가 받은 실행 결과는 닫아도 유지되지만 `노드 추출 중` 또는 `결과 전송 중`에는 닫지 마세요.
 
@@ -186,6 +209,30 @@ artifacts/assets/*
 README.md
 ```
 
+Plugin 현재 페이지 ZIP은 추가로 다음 파일을 포함합니다.
+
+```text
+page.json
+nodes/<top-level-node>.json
+metadata/file.json
+metadata/comments.json
+metadata/versions.json
+screenshots/<top-level-frame>.png
+assets/*
+```
+
+## Slack 연결과 전달 형식
+
+### 공식 Export ZIP
+
+NH Workspace/Org Owner에게 `All channels and conversations` 범위의 원본 JSON Export ZIP, export 기간, workspace 이름, 포함 범위 확인을 요청합니다. ZIP은 압축 해제하거나 내부 파일명을 바꾸지 않고 `/slack`에 올립니다. 공개 채널만 있는 Export도 처리하지만 비공개 채널·DM 전체 포함 여부는 Slack 플랜과 관리자 승인을 따릅니다.
+
+업로드는 로컬 메모리에서 250MB까지 받습니다. 압축 해제 전에 파일 수, 개별·전체 해제 크기, 압축비, 상위 경로를 검사하고 정규화가 끝나면 원본 byte를 지웁니다. 결과 ZIP에는 `users.json`, `conversations/*.ndjson`, `files/index.json`과 provenance가 들어갑니다. 일반 JSON Export의 파일 값은 실제 첨부가 아니라 인증이 필요한 링크일 수 있습니다.
+
+### Slack MCP OAuth
+
+공식 `https://mcp.slack.com/mcp`에 PKCE OAuth로 연결합니다. 요청 scope는 채널·그룹·DM history/read, `files:read`, `users:read`이며 인증 사용자가 볼 수 있는 대화만 읽습니다. 채널 ID 또는 Slack 대화 URL을 입력하면 history와 thread replies를 정규화합니다. 조직 전체 DM을 읽는 경로가 아니며 전체 DM은 관리자 Export를 사용합니다.
+
 Figma 실행 기록은 서버 메모리에 1시간 동안, 세션당 최근 3개를 보관합니다. artifact는 하나당 10MB, 실행당 100MB까지 저장합니다. 서버 재시작 시 인증 정보와 실행 기록은 사라지며 사용자가 ZIP을 선택했을 때만 영구 파일을 만듭니다.
 
 ## API
@@ -223,6 +270,20 @@ Figma:
 - `GET /api/figma/runs/:runId`
 - `GET /api/figma/runs/:runId/bundle.zip`
 - `GET /api/figma/runs/:runId/artifacts/:artifactId`
+
+Slack:
+
+- `GET /api/slack/status`
+- `POST /api/slack/auth/start`
+- `GET /api/slack/auth/callback`
+- `POST /api/slack/auth/logout`
+- `POST /api/slack/imports`
+- `POST /api/slack/imports/:importId/extract/stream`
+- `POST /api/slack/extract/stream`
+- `GET /api/slack/runs/:runId`
+- `GET /api/slack/runs/:runId/bundle.zip`
+
+브라우저의 모든 쓰기 API는 `/api/session`에서 받은 세션별 CSRF token과 허용된 loopback Origin을 요구합니다. Figma Plugin의 pair complete와 bearer job API만 Plugin token 경계로 분리합니다.
 
 추출 스트림은 `application/x-ndjson`이며 각 이벤트에 provider, runId, origin, Tool, 입력, 원시 응답, 상태, 소요 시간, 응답 byte와 artifact 참조가 포함됩니다.
 
