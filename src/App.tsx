@@ -17,6 +17,12 @@ import {
   streamExtraction,
   streamFigmaExtraction,
   streamFigmaQuestion,
+  disconnectSlack,
+  getSlackStatus,
+  startSlackOAuth,
+  streamSlackExtraction,
+  streamSlackImport,
+  uploadSlackExport,
 } from "./api";
 import figmaAppIcon from "./assets/figma-app-icon.svg";
 import notionAppIcon from "./assets/notion-app-icon.svg";
@@ -32,6 +38,9 @@ import { FigmaToolsGuide } from "./components/FigmaToolsGuide";
 import { ReadPathStrip } from "./components/ReadPathStrip";
 import { TargetPanel } from "./components/TargetPanel";
 import { ToolsGuide } from "./components/ToolsGuide";
+import { SlackConnectionPanel } from "./components/SlackConnectionPanel";
+import { SlackTargetPanel } from "./components/SlackTargetPanel";
+import { SlackToolsGuide } from "./components/SlackToolsGuide";
 import type {
   AppView,
   ConnectionStatus,
@@ -42,6 +51,8 @@ import type {
   FigmaQuestionAnswer,
   FigmaTransport,
   Provider,
+  SlackConnectionStatus,
+  SlackExtractionOptions,
 } from "./types";
 
 const DEMO_TARGET = "11111111-1111-4111-8111-111111111111";
@@ -53,11 +64,13 @@ const INITIAL_NOTION_OPTIONS: ExtractionOptions = {
   includeArchived: true,
   includeComments: true,
   includeTranscript: false,
+  includeWorkspace: false,
   mode: "live",
 };
 const INITIAL_FIGMA_OPTIONS: FigmaExtractionOptions = {
   target: "",
   targetMode: "link",
+  scope: "node",
   transport: "desktop",
   includeVariables: true,
   includeCodeConnect: true,
@@ -71,6 +84,7 @@ const INITIAL_FIGMA_OPTIONS: FigmaExtractionOptions = {
   mode: "live",
 };
 const FIGMA_SESSION_KEY = "mcp-trace-studio:figma-options";
+const INITIAL_SLACK_OPTIONS: SlackExtractionOptions = { mode: "export", includeFiles: false, target: "", oldest: "", latest: "" };
 
 function initialFigmaOptions(): FigmaExtractionOptions {
   try {
@@ -105,7 +119,8 @@ function normalizeInitialPath(): string {
 
 function routeFromPath(path = window.location.pathname): Route {
   const parts = path.split("/").filter(Boolean);
-  return { provider: parts[0] === "figma" ? "figma" : "notion", view: parts[1] === "tools" ? "tools" : "trace" };
+  const provider: Provider = parts[0] === "figma" ? "figma" : parts[0] === "slack" ? "slack" : "notion";
+  return { provider, view: parts[1] === "tools" ? "tools" : "trace" };
 }
 
 function pathFor(route: Route) {
@@ -169,10 +184,22 @@ function NotionStage() {
   );
 }
 
+function SlackStage({ mode }: { mode: SlackExtractionOptions["mode"] }) {
+  return (
+    <section className="provider-stage slack-stage">
+      <div className="provider-stage-inner">
+        <div className="app-icon-showcase"><span className="slack-stage-mark" aria-hidden="true">#</span></div>
+        <p>{mode === "export" ? "관리자가 전달한 Slack JSON Export ZIP을 사용자·대화·스레드·파일 참조로 정규화합니다." : "Slack MCP OAuth 사용자가 접근할 수 있는 채널과 스레드의 최신 정보를 읽습니다."}</p>
+      </div>
+    </section>
+  );
+}
+
 export default function App() {
   const [route, setRoute] = useState<Route>(() => routeFromPath(normalizeInitialPath()));
   const reducedMotion = useReducedMotion();
   const [notionStatus, setNotionStatus] = useState<ConnectionStatus>({ connected: false });
+  const [slackStatus, setSlackStatus] = useState<SlackConnectionStatus>({ connected: false });
   const [figmaStatuses, setFigmaStatuses] = useState<Record<FigmaTransport, FigmaConnectionStatus>>({
     desktop: { connected: false, transport: "desktop" },
     remote: { connected: false, transport: "remote", beta: true },
@@ -183,16 +210,22 @@ export default function App() {
   const [expectedEmail, setExpectedEmail] = useState("");
   const [notionOptions, setNotionOptions] = useState(INITIAL_NOTION_OPTIONS);
   const [figmaOptions, setFigmaOptions] = useState(initialFigmaOptions);
+  const [slackOptions, setSlackOptions] = useState<SlackExtractionOptions>(INITIAL_SLACK_OPTIONS);
   const [notionEvents, setNotionEvents] = useState<ExtractionEvent[]>([]);
   const [figmaEvents, setFigmaEvents] = useState<ExtractionEvent[]>([]);
+  const [slackEvents, setSlackEvents] = useState<ExtractionEvent[]>([]);
   const [notionSelectedId, setNotionSelectedId] = useState<string>();
   const [figmaSelectedId, setFigmaSelectedId] = useState<string>();
+  const [slackSelectedId, setSlackSelectedId] = useState<string>();
   const [notionRunning, setNotionRunning] = useState(false);
   const [figmaRunning, setFigmaRunning] = useState(false);
+  const [slackRunning, setSlackRunning] = useState(false);
   const [notionError, setNotionError] = useState<string>();
   const [figmaError, setFigmaError] = useState<string>();
+  const [slackError, setSlackError] = useState<string>();
   const notionController = useRef<AbortController | undefined>(undefined);
   const figmaController = useRef<AbortController | undefined>(undefined);
+  const slackController = useRef<AbortController | undefined>(undefined);
 
   const refreshNotion = useCallback(async () => {
     try {
@@ -209,13 +242,19 @@ export default function App() {
     setFigmaStatuses((current) => ({ ...current, [transport]: next }));
   }, []);
 
+  const refreshSlack = useCallback(async () => {
+    try { setSlackStatus(await getSlackStatus()); }
+    catch (error) { setSlackStatus({ connected: false, message: error instanceof Error ? error.message : String(error) }); }
+  }, []);
+
   useEffect(() => {
     setStatusLoading(true);
-    void Promise.all([refreshNotion(), refreshFigma("desktop"), refreshFigma("remote"), refreshFigma("codex"), refreshFigma("plugin")]).finally(() => setStatusLoading(false));
+    void Promise.all([refreshNotion(), refreshSlack(), refreshFigma("desktop"), refreshFigma("remote"), refreshFigma("codex"), refreshFigma("plugin")]).finally(() => setStatusLoading(false));
     const params = new URLSearchParams(window.location.search);
     if (params.get("restAuth") === "error") setFigmaError(params.get("reason") || "Figma 버전 이력 OAuth 연결에 실패했습니다.");
+    if (window.location.pathname.startsWith("/slack") && params.get("auth") === "error") setSlackError(params.get("reason") || "Slack OAuth 연결에 실패했습니다.");
     if (params.has("auth") || params.has("restAuth")) window.history.replaceState({}, "", window.location.pathname);
-  }, [refreshFigma, refreshNotion]);
+  }, [refreshFigma, refreshNotion, refreshSlack]);
 
   useEffect(() => {
     window.sessionStorage.setItem(FIGMA_SESSION_KEY, JSON.stringify({ ...figmaOptions, mode: "live" }));
@@ -241,8 +280,10 @@ export default function App() {
 
   const notionSelected = useMemo(() => notionEvents.find((event) => event.id === notionSelectedId) ?? notionEvents.at(-1), [notionEvents, notionSelectedId]);
   const figmaSelected = useMemo(() => figmaEvents.find((event) => event.id === figmaSelectedId) ?? figmaEvents.at(-1), [figmaEvents, figmaSelectedId]);
+  const slackSelected = useMemo(() => slackEvents.find((event) => event.id === slackSelectedId) ?? slackEvents.at(-1), [slackEvents, slackSelectedId]);
   const notionComplete = latestComplete(notionEvents);
   const figmaComplete = latestComplete(figmaEvents);
+  const slackComplete = latestComplete(slackEvents);
   const figmaAnswer = latestFigmaAnswer(figmaEvents);
 
   const navigate = (next: Route) => (event: MouseEvent<HTMLAnchorElement>) => {
@@ -312,6 +353,30 @@ export default function App() {
     }
   };
 
+  const runSlack = async () => {
+    slackController.current?.abort();
+    const controller = new AbortController();
+    slackController.current = controller;
+    setSlackEvents([]); setSlackSelectedId(undefined); setSlackError(undefined); setSlackRunning(true);
+    try {
+      const stream = slackOptions.mode === "export"
+        ? streamSlackImport(slackOptions.importId ?? "", (event) => {
+            setSlackEvents((current) => upsertEvent(current, event));
+            setSlackSelectedId((current) => current ?? event.id);
+          }, controller.signal)
+        : streamSlackExtraction(slackOptions, (event) => {
+            setSlackEvents((current) => upsertEvent(current, event));
+            setSlackSelectedId((current) => current ?? event.id);
+          }, controller.signal);
+      await stream;
+      if (slackOptions.mode === "export") setSlackOptions((current) => ({ ...current, importId: undefined }));
+    } catch (error) {
+      if (!controller.signal.aborted) setSlackError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (!controller.signal.aborted) setSlackRunning(false);
+    }
+  };
+
   const changeFigmaTransport = (transport: FigmaTransport) => {
     setFigmaOptions((current) => ({
       ...current,
@@ -323,8 +388,14 @@ export default function App() {
   };
 
   const activeFigmaStatus = figmaStatuses[figmaOptions.transport];
-  const activeConnected = route.provider === "notion" ? notionStatus.connected : activeFigmaStatus.connected;
-  const connectionCopy = statusLoading ? "연결 확인 중" : activeConnected ? route.provider === "notion" ? `${notionStatus.identity?.workspace?.name ?? "Notion"} 연결됨` : `${figmaOptions.transport === "desktop" ? "Desktop" : figmaOptions.transport === "remote" ? "Remote" : figmaOptions.transport === "plugin" ? "Plugin" : "Codex"} 준비됨` : "연결 안 됨";
+  const activeConnected = route.provider === "notion" ? notionStatus.connected : route.provider === "slack" ? slackOptions.mode === "export" || slackStatus.connected : activeFigmaStatus.connected;
+  const connectionCopy = statusLoading
+    ? "연결 확인 중"
+    : route.provider === "slack"
+      ? slackOptions.mode === "export" ? "로컬 ZIP 모드" : slackStatus.connected ? "Slack MCP 연결됨" : "Slack 연결 안 됨"
+      : activeConnected
+        ? route.provider === "notion" ? `${notionStatus.identity?.workspace?.name ?? "Notion"} 연결됨` : `${figmaOptions.transport === "desktop" ? "Desktop" : figmaOptions.transport === "remote" ? "Remote" : figmaOptions.transport === "plugin" ? "Plugin" : "Codex"} 준비됨`
+        : "연결 안 됨";
   const motionProps = reducedMotion
     ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 }, transition: { duration: 0.16 } }
     : { initial: { opacity: 0, x: route.provider === "figma" ? 18 : -18, filter: "blur(6px)" }, animate: { opacity: 1, x: 0, filter: "blur(0px)" }, exit: { opacity: 0, x: route.provider === "figma" ? -18 : 18, filter: "blur(5px)" }, transition: { type: "spring" as const, bounce: 0, duration: 0.38 } };
@@ -337,7 +408,7 @@ export default function App() {
         </a>
         <nav className="provider-shuttle" aria-label="추출 출처">
           <span className={`shuttle-indicator ${route.provider}`} aria-hidden="true" />
-          {(["notion", "figma"] as const).map((provider) => <a key={provider} href={pathFor({ provider, view: route.view })} onClick={navigate({ provider, view: route.view })} aria-current={route.provider === provider ? "page" : undefined}>{provider === "notion" ? "Notion" : "Figma"}</a>)}
+          {(["notion", "figma", "slack"] as const).map((provider) => <a key={provider} href={pathFor({ provider, view: route.view })} onClick={navigate({ provider, view: route.view })} aria-current={route.provider === provider ? "page" : undefined}>{provider === "notion" ? "Notion" : provider === "figma" ? "Figma" : "Slack"}</a>)}
         </nav>
         <div className="header-actions">
           <nav className="site-nav" aria-label="주요 메뉴">
@@ -351,12 +422,13 @@ export default function App() {
       <AnimatePresence initial={false} mode="popLayout">
         <motion.div className="route-surface" key={`${route.provider}-${route.view}`} {...motionProps}>
           {route.view === "tools" ? (
-            route.provider === "notion" ? <ToolsGuide status={notionStatus} /> : <FigmaToolsGuide statuses={figmaStatuses} transport={figmaOptions.transport} onTransportChange={changeFigmaTransport} />
+            route.provider === "notion" ? <ToolsGuide status={notionStatus} /> : route.provider === "figma" ? <FigmaToolsGuide statuses={figmaStatuses} transport={figmaOptions.transport} onTransportChange={changeFigmaTransport} /> : <SlackToolsGuide status={slackStatus} />
           ) : route.provider === "notion" ? (
             <>
               <NotionStage />
               <ReadPathStrip />
               {notionComplete ? <section className={`completion-bar ${notionComplete.state}`}><div><span>마지막 실행</span><strong>{notionComplete.message}</strong></div><button type="button" onClick={() => setNotionSelectedId(notionComplete.id)}>결과 열기</button></section> : null}
+              {notionComplete?.runId ? <ExportActions provider="notion" runId={notionComplete.runId} /> : null}
               {notionError ? <div className="page-error" role="alert">{notionError}</div> : null}
               <main className="workspace">
                 <aside className="setup-column"><ConnectionPanel status={notionStatus} expectedEmail={expectedEmail} onExpectedEmailChange={setExpectedEmail} onOAuth={async () => window.location.assign(await startOAuth(expectedEmail))} onPat={async (token) => setNotionStatus(await connectPat(expectedEmail, token))} onDisconnect={async () => { await disconnect(); setNotionStatus({ connected: false }); setNotionEvents([]); }} busy={notionRunning || statusLoading} /><TargetPanel options={notionOptions} onChange={setNotionOptions} onRun={(mode) => void runNotion(mode)} running={notionRunning} connected={notionStatus.connected} /></aside>
@@ -364,25 +436,40 @@ export default function App() {
                 <DataInspector event={notionSelected} />
               </main>
             </>
-          ) : (
+          ) : route.provider === "figma" ? (
             <>
               <FigmaStage options={figmaOptions} status={activeFigmaStatus} />
               {figmaComplete ? <section className={`completion-bar figma-completion ${figmaComplete.state}`}><div><span>마지막 실행</span><strong>{figmaComplete.message}</strong></div><button type="button" onClick={() => setFigmaSelectedId(figmaComplete.id)}>결과 열기</button></section> : null}
-              {figmaComplete?.runId ? <ExportActions runId={figmaComplete.runId} /> : null}
+              {figmaComplete?.runId ? <ExportActions provider="figma" runId={figmaComplete.runId} /> : null}
               <FigmaAnswerCard answer={figmaAnswer} />
               <FigmaHistoryCard events={figmaEvents} />
               {figmaError ? <div className="page-error" role="alert">{figmaError}</div> : null}
               <main className="workspace figma-workspace">
-                <aside className="setup-column"><FigmaConnectionPanel statuses={figmaStatuses} transport={figmaOptions.transport} onTransportChange={changeFigmaTransport} onRefresh={refreshFigma} onOAuth={async () => window.location.assign(await startFigmaOAuth())} onDisconnect={async () => { await disconnectFigmaRemote(); await refreshFigma("remote"); setFigmaEvents([]); }} onCodexLogin={startCodexLogin} onCodexFigmaOAuth={startCodexFigmaOAuth} onCodexCancel={cancelCodexAuth} onPluginPair={startPluginPairing} onRestOAuth={async () => window.location.assign(await startFigmaRestOAuth())} onRestDisconnect={disconnectFigmaRest} busy={figmaRunning || statusLoading} /><FigmaTargetPanel options={figmaOptions} onChange={setFigmaOptions} onRun={(mode) => void runFigma(mode)} onAsk={(question) => void askFigma(question)} running={figmaRunning} connected={activeFigmaStatus.connected} /></aside>
+                <aside className="setup-column"><FigmaConnectionPanel statuses={figmaStatuses} transport={figmaOptions.transport} onTransportChange={changeFigmaTransport} onRefresh={refreshFigma} onOAuth={async () => window.location.assign(await startFigmaOAuth())} onDisconnect={async () => { await disconnectFigmaRemote(); await refreshFigma("remote"); setFigmaEvents([]); }} onCodexLogin={startCodexLogin} onCodexFigmaOAuth={startCodexFigmaOAuth} onCodexCancel={cancelCodexAuth} onPluginPair={startPluginPairing} onRestOAuth={async () => window.location.assign(await startFigmaRestOAuth())} onRestDisconnect={disconnectFigmaRest} busy={figmaRunning || statusLoading} /><FigmaTargetPanel options={figmaOptions} onChange={setFigmaOptions} onRun={(mode) => void runFigma(mode)} onAsk={(question) => void askFigma(question)} running={figmaRunning} connected={activeFigmaStatus.connected} metadataConnected={figmaStatuses.plugin.restOAuth?.connected === true} /></aside>
                 <ExtractionTimeline events={figmaEvents} selectedId={figmaSelected?.id} onSelect={(event) => setFigmaSelectedId(event.id)} running={figmaRunning} provider="figma" />
                 <DataInspector event={figmaSelected} />
+              </main>
+            </>
+          ) : (
+            <>
+              <SlackStage mode={slackOptions.mode} />
+              {slackComplete ? <section className={`completion-bar ${slackComplete.state}`}><div><span>마지막 실행</span><strong>{slackComplete.message}</strong></div><button type="button" onClick={() => setSlackSelectedId(slackComplete.id)}>결과 열기</button></section> : null}
+              {slackComplete?.runId ? <ExportActions provider="slack" runId={slackComplete.runId} /> : null}
+              {slackError ? <div className="page-error" role="alert">{slackError}</div> : null}
+              <main className="workspace">
+                <aside className="setup-column">
+                  <SlackConnectionPanel status={slackStatus} busy={slackRunning || statusLoading} onOAuth={async () => window.location.assign(await startSlackOAuth())} onDisconnect={async () => { await disconnectSlack(); setSlackStatus({ connected: false }); setSlackEvents([]); }} onRefresh={refreshSlack} />
+                  <SlackTargetPanel options={slackOptions} connected={slackStatus.connected} running={slackRunning} onChange={setSlackOptions} onUpload={uploadSlackExport} onRun={() => void runSlack()} />
+                </aside>
+                <ExtractionTimeline events={slackEvents} selectedId={slackSelected?.id} onSelect={(event) => setSlackSelectedId(event.id)} running={slackRunning} provider="slack" />
+                <DataInspector event={slackSelected} />
               </main>
             </>
           )}
         </motion.div>
       </AnimatePresence>
 
-      <footer><p>인증 정보와 원시 응답은 영구 저장하지 않습니다. 실제 추출은 읽기 전용입니다.</p><div>{route.provider === "notion" ? <><a href="https://developers.notion.com/guides/mcp/build-mcp-client" target="_blank" rel="noreferrer">Notion MCP 연결</a><a href="https://developers.notion.com/guides/mcp/mcp-supported-tools" target="_blank" rel="noreferrer">지원 Tool</a></> : <><a href="https://developers.figma.com/docs/figma-mcp-server/tools-and-prompts/" target="_blank" rel="noreferrer">Figma Tool</a><a href="https://developers.figma.com/docs/figma-mcp-server/local-server-installation/" target="_blank" rel="noreferrer">Desktop 설정</a></>}</div></footer>
+      <footer><p>인증 정보와 원시 응답은 영구 저장하지 않습니다. 실제 추출은 읽기 전용입니다.</p><div>{route.provider === "notion" ? <><a href="https://developers.notion.com/guides/mcp/build-mcp-client" target="_blank" rel="noreferrer">Notion MCP 연결</a><a href="https://developers.notion.com/guides/mcp/mcp-supported-tools" target="_blank" rel="noreferrer">지원 Tool</a></> : route.provider === "figma" ? <><a href="https://developers.figma.com/docs/figma-mcp-server/tools-and-prompts/" target="_blank" rel="noreferrer">Figma Tool</a><a href="https://developers.figma.com/docs/figma-mcp-server/local-server-installation/" target="_blank" rel="noreferrer">Desktop 설정</a></> : <><a href="https://docs.slack.dev/ai/slack-mcp-server" target="_blank" rel="noreferrer">Slack MCP</a><a href="https://slack.com/help/articles/201658943-Export-your-workspace-data" target="_blank" rel="noreferrer">Export 안내</a></>}</div></footer>
     </div>
   );
 }

@@ -4,6 +4,7 @@ import type {
   FigmaPluginJob,
   FigmaPluginMeta,
   FigmaTarget,
+  FigmaFileType,
 } from "./types.js";
 
 const PAIRING_TTL_MS = 5 * 60 * 1000;
@@ -11,6 +12,7 @@ const CONNECTION_STALE_MS = 35 * 1000;
 const JOB_TTL_MS = 90 * 1000;
 const MAX_FAILED_PAIR_ATTEMPTS = 5;
 const MAX_ARTIFACT_BYTES = 10 * 1024 * 1024;
+const MAX_JSON_PART_BYTES = 20 * 1024 * 1024;
 const MAX_JOB_ARTIFACT_BYTES = 100 * 1024 * 1024;
 
 type Pairing = {
@@ -155,6 +157,35 @@ export class FigmaPluginBridge {
   }
 
   requestExtraction(ownerSessionId: string, target: FigmaTarget, signal?: AbortSignal): Promise<CompletedPluginJob> {
+    return this.requestJob(ownerSessionId, {
+      id: randomUUID(),
+      type: "extract_node",
+      target,
+      options: this.jobOptions(),
+    }, signal);
+  }
+
+  requestPageExtraction(ownerSessionId: string, fileKey: string, fileType: FigmaFileType, signal?: AbortSignal): Promise<CompletedPluginJob> {
+    return this.requestJob(ownerSessionId, {
+      id: randomUUID(),
+      type: "extract_page",
+      fileKey,
+      fileType,
+      options: this.jobOptions(),
+    }, signal);
+  }
+
+  private jobOptions() {
+    return {
+      maxNodes: 5_000,
+      maxJsonBytes: 20 * 1024 * 1024,
+      maxDimension: 2_048,
+      maxAssets: 20,
+      maxAssetBytes: MAX_ARTIFACT_BYTES,
+    };
+  }
+
+  private requestJob(ownerSessionId: string, job: FigmaPluginJob, signal?: AbortSignal): Promise<CompletedPluginJob> {
     this.cleanup();
     const connection = [...this.connections.values()].find((candidate) => candidate.ownerSessionId === ownerSessionId);
     if (!connection) return Promise.reject(new Error("Figma 플러그인이 연결되어 있지 않습니다."));
@@ -165,18 +196,6 @@ export class FigmaPluginBridge {
     const active = [...this.jobs.values()].find((candidate) => candidate.connectionToken === connection.token && !candidate.settled);
     if (active) return Promise.reject(new Error("이 Figma 플러그인은 이미 다른 추출을 실행 중입니다."));
 
-    const job: FigmaPluginJob = {
-      id: randomUUID(),
-      type: "extract_node",
-      target,
-      options: {
-        maxNodes: 5_000,
-        maxJsonBytes: 20 * 1024 * 1024,
-        maxDimension: 2_048,
-        maxAssets: 20,
-        maxAssetBytes: MAX_ARTIFACT_BYTES,
-      },
-    };
     return new Promise<CompletedPluginJob>((resolve, reject) => {
       const pending: PendingJob = {
         job,
@@ -206,7 +225,8 @@ export class FigmaPluginBridge {
     const connection = this.authenticate(token);
     const pending = this.requireJob(connection, jobId);
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(slot)) throw new Error("artifact slot 형식이 잘못되었습니다.");
-    if (data.byteLength > MAX_ARTIFACT_BYTES) throw new Error("artifact 하나는 10MB를 넘을 수 없습니다.");
+    const limit = mimeType === "application/json" ? MAX_JSON_PART_BYTES : MAX_ARTIFACT_BYTES;
+    if (data.byteLength > limit) throw new Error(`artifact 하나는 ${Math.round(limit / 1024 / 1024)}MB를 넘을 수 없습니다.`);
     const previous = pending.artifacts.get(slot)?.data.byteLength ?? 0;
     if (pending.artifactBytes - previous + data.byteLength > MAX_JOB_ARTIFACT_BYTES) throw new Error("실행 artifact는 총 100MB를 넘을 수 없습니다.");
     pending.artifacts.set(slot, { data, mimeType });
@@ -216,12 +236,17 @@ export class FigmaPluginBridge {
   submitResult(token: string, jobId: string, result: FigmaPluginExtractionResult): void {
     const connection = this.authenticate(token);
     const pending = this.requireJob(connection, jobId);
-    if (result.meta.fileKey !== pending.job.target.fileKey) {
+    const expectedFileKey = pending.job.type === "extract_node" ? pending.job.target.fileKey : pending.job.fileKey;
+    if (result.meta.fileKey !== expectedFileKey) {
       this.failJob(jobId, new Error("열린 Figma 파일과 입력한 링크의 file key가 다릅니다."));
       return;
     }
-    if (result.meta.nodeId !== pending.job.target.nodeId) {
+    if (pending.job.type === "extract_node" && result.meta.nodeId !== pending.job.target.nodeId) {
       this.failJob(jobId, new Error("플러그인이 반환한 node ID가 요청과 다릅니다."));
+      return;
+    }
+    if (pending.job.type === "extract_page" && (!result.page || result.scope !== "current_page")) {
+      this.failJob(jobId, new Error("플러그인이 현재 페이지 결과를 반환하지 않았습니다."));
       return;
     }
     for (const artifact of result.artifacts) {

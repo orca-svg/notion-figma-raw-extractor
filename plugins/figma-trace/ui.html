@@ -103,7 +103,7 @@
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.message || `대기 실패 (${response.status})`);
         if (payload.job) {
-          setStatus("busy", "노드 추출 중", `${payload.job.target.nodeId}의 구조와 이미지를 읽고 있습니다.`);
+          setStatus("busy", payload.job.type === "extract_page" ? "페이지 추출 중" : "노드 추출 중", payload.job.type === "extract_page" ? "현재 페이지의 최상위 프레임과 이미지를 읽고 있습니다." : `${payload.job.target.nodeId}의 구조와 이미지를 읽고 있습니다.`);
           parent.postMessage({ pluginMessage: { type: "job", job: payload.job } }, "*");
           return;
         }

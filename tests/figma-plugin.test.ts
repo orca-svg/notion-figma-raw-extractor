@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import { strFromU8, strToU8, unzipSync } from "fflate";
 import { buildSemanticHints, diffFigmaSnapshots, groupChangesByActor, loadFigmaHistory } from "../server/figma-history.js";
 import { FigmaPluginBridge } from "../server/figma-plugin-bridge.js";
 import { runPluginFigmaExtraction } from "../server/figma-plugin-extract.js";
-import { createFigmaRun, upsertRunEvent } from "../server/figma-run-store.js";
+import { buildFigmaRunZip, createFigmaRun, upsertRunEvent } from "../server/figma-run-store.js";
 import { codexQuestionFailureMessage, normalizeCodexBridgeAnswer } from "../server/figma-question.js";
 import { FigmaRestApiError, figmaRestJson } from "../server/figma-rest-client.js";
 import type { FigmaExtractionInput, FigmaVersionSnapshot } from "../server/types.js";
@@ -68,6 +69,7 @@ describe("Figma Plugin pairing bridge", () => {
     const png = Uint8Array.from([137, 80, 78, 71]);
     bridge.uploadArtifact(connection.sessionToken, job!.id, "screenshot", "image/png", png);
     bridge.submitResult(connection.sessionToken, job!.id, {
+      scope: "node",
       snapshot: { id: target.nodeId, type: "FRAME", name: "Feed" },
       nodeCount: 1,
       partial: false,
@@ -100,6 +102,7 @@ describe("Figma Plugin pairing bridge", () => {
     await expect(bridge.requestExtraction("owner", target)).rejects.toThrow(/이미 다른 추출/);
     const job = await bridge.nextJob(connection.sessionToken, undefined, 100);
     bridge.submitResult(connection.sessionToken, job!.id, {
+      scope: "node",
       snapshot: {}, nodeCount: 0, partial: false,
       meta: { pluginVersion: "1", editorType: "figma", fileKey: "wrong", nodeId: target.nodeId },
       artifacts: [],
@@ -113,6 +116,7 @@ describe("Figma Plugin pairing bridge", () => {
     const input: FigmaExtractionInput = {
       target: target.sourceUrl,
       targetMode: "link",
+      scope: "node",
       transport: "plugin",
       includeVariables: true,
       includeCodeConnect: true,
@@ -123,12 +127,26 @@ describe("Figma Plugin pairing bridge", () => {
       clientLanguages: "unknown",
       mode: "live",
     };
+    vi.stubGlobal("fetch", vi.fn(async (request: string | URL | Request) => {
+      const url = String(request);
+      if (url.includes("/meta")) return Response.json({ file: { creator: { id: "owner", name: "Owner" } } });
+      if (url.includes("/comments")) return Response.json({ comments: [] });
+      if (url.endsWith("/versions")) return Response.json({ versions: [] });
+      return Response.json({
+        lastModified: "2026-08-18T00:00:00Z",
+        document: {
+          id: "0:0",
+          children: [{ id: target.nodeId, type: "FRAME", name: "News Feed", children: [{ id: "66:27617", type: "TEXT", name: "Primary CTA", characters: "기사 읽기" }] }],
+        },
+      });
+    }));
     const run = createFigmaRun("owner", input);
-    const execution = runPluginFigmaExtraction(bridge, "owner", {}, input, run, (event) => upsertRunEvent(run, event));
+    const execution = runPluginFigmaExtraction(bridge, "owner", { accessToken: "access", expiresAt: Date.now() + 10 * 60_000 }, input, run, (event) => upsertRunEvent(run, event));
     const job = await bridge.nextJob(connection.sessionToken, undefined, 1_000);
     const png = Uint8Array.from([137, 80, 78, 71]);
     bridge.uploadArtifact(connection.sessionToken, job!.id, "screenshot", "image/png", png);
     bridge.submitResult(connection.sessionToken, job!.id, {
+      scope: "node",
       snapshot: {
         id: target.nodeId,
         type: "FRAME",
@@ -141,12 +159,63 @@ describe("Figma Plugin pairing bridge", () => {
       artifacts: [{ slot: "screenshot", kind: "screenshot", mimeType: "image/png", name: "feed.png", bytes: png.byteLength }],
     });
     await execution;
-    expect(run.contextPackage).toMatchObject({ target, partial: false, history: { snapshots: [], changes: [] } });
+    expect(run.contextPackage).toMatchObject({ target, partial: false, history: { snapshots: [{ current: true }], changes: [] } });
+    expect(run.restMetadata).toMatchObject({ file: { file: { creator: { id: "owner" } } }, comments: { comments: [] } });
     expect(run.contextPackage?.semanticHints.some((hint) => hint.nodeId === "66:27617" && hint.provenance.some((source) => source.source === "text"))).toBe(true);
     expect(run.artifacts.size).toBe(1);
-    expect(run.events.map((event) => event.group)).toEqual(["target", "connection", "current-snapshot", "artifacts", "semantics", "versions", "diff", "summary"]);
-    expect(run.events.find((event) => event.group === "versions")?.state).toBe("skipped");
-    expect(run.events.find((event) => event.group === "diff")?.state).toBe("skipped");
+    expect(run.events.map((event) => event.group)).toEqual(["target", "connection", "metadata", "current-snapshot", "artifacts", "semantics", "history", "summary"]);
+  });
+
+  it("현재 페이지의 최상위 프레임 JSON·PNG와 필수 REST metadata를 ZIP으로 조립한다", async () => {
+    const bridge = new FigmaPluginBridge();
+    const connection = connect(bridge);
+    vi.stubGlobal("fetch", vi.fn(async (request: string | URL | Request) => {
+      const url = String(request);
+      if (url.includes("/meta")) return Response.json({ file: { creator: { id: "owner", name: "Owner" }, last_touched_by: { id: "editor", name: "Editor" } } });
+      if (url.includes("/comments")) return Response.json({ comments: [{ id: "comment-1", message: "검토 필요", user: { id: "reviewer" } }] });
+      if (url.endsWith("/versions")) return Response.json({ versions: [{ id: "v1", created_at: "2026-08-18T00:00:00Z", user: { id: "editor", name: "Editor" } }] });
+      return Response.json({});
+    }));
+    const input: FigmaExtractionInput = {
+      target: "",
+      targetMode: "link",
+      scope: "current_page",
+      transport: "plugin",
+      includeVariables: true,
+      includeCodeConnect: true,
+      includeMotion: true,
+      includeLibraries: false,
+      includeAssets: true,
+      clientFrameworks: "unknown",
+      clientLanguages: "unknown",
+      mode: "live",
+    };
+    const run = createFigmaRun("owner", input);
+    const execution = runPluginFigmaExtraction(bridge, "owner", { accessToken: "access", expiresAt: Date.now() + 10 * 60_000 }, input, run, (event) => upsertRunEvent(run, event));
+    const job = await bridge.nextJob(connection.sessionToken, undefined, 1_000);
+    expect(job).toMatchObject({ type: "extract_page", fileKey: target.fileKey });
+    const nodeJson = strToU8(JSON.stringify({ id: "1:2", type: "FRAME", name: "Home" }));
+    const png = Uint8Array.from([137, 80, 78, 71]);
+    bridge.uploadArtifact(connection.sessionToken, job!.id, "node-json-1", "application/json", nodeJson);
+    bridge.uploadArtifact(connection.sessionToken, job!.id, "frame-png-1", "image/png", png);
+    bridge.submitResult(connection.sessionToken, job!.id, {
+      scope: "current_page",
+      nodeCount: 1,
+      partial: false,
+      meta: { pluginVersion: "1.1.0", editorType: "figma", fileKey: target.fileKey, pageId: "0:1", pageName: "Main" },
+      page: { id: "0:1", name: "Main", nodes: [{ nodeId: "1:2", nodeName: "Home", nodeType: "FRAME", jsonSlot: "node-json-1", screenshotSlot: "frame-png-1", nodeCount: 1, partial: false }] },
+      artifacts: [
+        { slot: "node-json-1", kind: "json", mimeType: "application/json", name: "Home.json", bytes: nodeJson.byteLength },
+        { slot: "frame-png-1", kind: "screenshot", mimeType: "image/png", name: "Home.png", bytes: png.byteLength },
+      ],
+    });
+    await execution;
+    expect(run.pagePackage).toMatchObject({ pageId: "0:1", pageName: "Main", partial: false, nodes: [{ jsonPath: "nodes/Home-1-2.json", screenshotPath: "screenshots/Home-1-2.png" }] });
+    const zip = unzipSync(buildFigmaRunZip(run));
+    expect(JSON.parse(strFromU8(zip["page.json"])).pageName).toBe("Main");
+    expect(JSON.parse(strFromU8(zip["nodes/Home-1-2.json"]))).toMatchObject({ id: "1:2" });
+    expect(zip["screenshots/Home-1-2.png"]).toEqual(png);
+    expect(JSON.parse(strFromU8(zip["metadata/comments.json"])).comments[0].id).toBe("comment-1");
   });
 });
 
@@ -253,7 +322,7 @@ describe("Figma REST OAuth broker tickets", () => {
     const verifier = "v".repeat(64);
     prepareOAuth({ method: "POST", body: { codeVerifier: verifier, redeemSecretHash: sha256Base64Url("redeem") }, headers: {} } as any, response as any);
     const url = new URL(body.authUrl!);
-    expect(url.searchParams.get("scope")).toBe("current_user:read file_content:read file_versions:read");
+    expect(url.searchParams.get("scope")).toBe("current_user:read file_content:read file_metadata:read file_comments:read file_versions:read");
     expect(url.searchParams.get("code_challenge")).toBe(sha256Base64Url(verifier));
     expect(openTicket(url.searchParams.get("state")!, secret, "flow")).toMatchObject({ codeVerifier: verifier });
   });

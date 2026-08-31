@@ -34,7 +34,7 @@ type Props = {
   selectedId?: string;
   onSelect: (event: ExtractionEvent) => void;
   running: boolean;
-  provider?: "notion" | "figma";
+  provider?: "notion" | "figma" | "slack";
 };
 
 export function ExtractionTimeline({ events, selectedId, onSelect, running, provider = "notion" }: Props) {
@@ -50,7 +50,7 @@ export function ExtractionTimeline({ events, selectedId, onSelect, running, prov
       {events.length === 0 ? (
         <div className="empty-trace">
           <span className="empty-signal" aria-hidden="true" />
-          <p>{provider === "figma" ? "Figma 연결과 노드를 정한 뒤 실행하세요." : "계정과 대상을 정한 뒤 실행하세요."}</p>
+          <p>{provider === "figma" ? "Figma 연결과 추출 범위를 정한 뒤 실행하세요." : provider === "slack" ? "Slack Export ZIP을 올리거나 MCP 대상을 정한 뒤 실행하세요." : "계정과 대상을 정한 뒤 실행하세요."}</p>
           <small>각 Tool의 입력, 원시 응답, 걸린 시간이 이 레이어를 따라 쌓입니다.</small>
         </div>
       ) : (

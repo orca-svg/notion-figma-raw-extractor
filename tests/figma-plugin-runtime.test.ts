@@ -39,7 +39,7 @@ function bootPlugin(editorType: "figma" | "figjam", node: any, fileKey = "file-k
     editorType,
     fileKey,
     root: { name: "Fixture" },
-    currentPage: { name: "Page 1" },
+    currentPage: { id: "0:1", name: "Page 1", children: [node], loadAsync: vi.fn(async () => undefined) },
     currentUser: { id: "user-1", name: "Alice", photoUrl: null },
     skipInvisibleInstanceChildren: false,
     showUI: vi.fn(),
@@ -60,6 +60,16 @@ function job(fileType: "design" | "figjam", options: Partial<Record<string, numb
   };
 }
 
+function pageJob(fileType: "design" | "figjam") {
+  return {
+    id: "page-job-1",
+    type: "extract_page",
+    fileKey: "file-key",
+    fileType,
+    options: { maxNodes: 5_000, maxJsonBytes: 20 * 1024 * 1024, maxDimension: 2_048, maxAssets: 20, maxAssetBytes: 10 * 1024 * 1024 },
+  };
+}
+
 describe("Figma development plugin API mock", () => {
   it.each([["figma", "design"], ["figjam", "figjam"]] as const)("%s에서 JSON_REST_V1 snapshot과 PNG를 직렬화한다", async (editorType, fileType) => {
     const node = createNode("1:2", [{ id: "1:3", type: "TEXT", name: "Headline" }]);
@@ -76,6 +86,19 @@ describe("Figma development plugin API mock", () => {
     await plugin.figma.ui.onmessage({ type: "job", job: job("design") });
     expect(plugin.messages.at(-1)).toMatchObject({ type: "job-error", message: expect.stringMatching(/file key/) });
     expect(plugin.getNode).not.toHaveBeenCalled();
+  });
+
+  it("현재 페이지를 로드하고 최상위 프레임별 JSON과 PNG를 분리한다", async () => {
+    const node = createNode("1:2", [{ id: "1:3", type: "TEXT", name: "Headline" }]);
+    const plugin = bootPlugin("figma", node);
+    await plugin.figma.ui.onmessage({ type: "job", job: pageJob("design") });
+    const message = plugin.messages.at(-1);
+    expect(plugin.figma.currentPage.loadAsync).toHaveBeenCalledOnce();
+    expect(message).toMatchObject({
+      type: "job-result",
+      result: { scope: "current_page", page: { id: "0:1", name: "Page 1", nodes: [{ nodeId: "1:2", jsonSlot: "node-json-1", screenshotSlot: "frame-png-1" }] } },
+    });
+    expect(message.payloads.map((payload: any) => payload.kind)).toEqual(expect.arrayContaining(["json", "screenshot"]));
   });
 
   it("하위 이미지 후보를 20개로 제한하고 큰 트리를 partial snapshot으로 자른다", async () => {

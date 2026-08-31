@@ -152,7 +152,7 @@ export function ToolsGuide({ status }: { status: ConnectionStatus }) {
       <aside className="safety-note">
         <span>이 앱의 원칙</span>
         <strong>추출 검사에서는 쓰기 도구를 호출하지 않습니다.</strong>
-        <p>소개 화면에는 지원 범위를 이해할 수 있도록 쓰기 도구도 표시하지만, 실제 실행 경로는 검색·조회·댓글 읽기로 제한됩니다.</p>
+        <p>소개 화면에는 지원 범위를 이해할 수 있도록 쓰기 도구도 표시하지만, 실제 실행 경로는 검색·조회·댓글 읽기와 선택한 경우의 워크스페이스 탐색으로 제한됩니다.</p>
       </aside>
     </main>
   );

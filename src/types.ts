@@ -1,5 +1,5 @@
 export type StepState = "running" | "success" | "warning" | "error" | "skipped";
-export type Provider = "notion" | "figma";
+export type Provider = "notion" | "figma" | "slack";
 export type AppView = "trace" | "tools";
 
 export type ArtifactRef = {
@@ -53,6 +53,7 @@ export type ExtractionOptions = {
   includeArchived: boolean;
   includeComments: boolean;
   includeTranscript: boolean;
+  includeWorkspace: boolean;
   mode: "live" | "demo";
 };
 
@@ -94,6 +95,7 @@ export type FigmaConnectionStatus = {
 export type FigmaExtractionOptions = {
   target: string;
   targetMode: "link" | "selection";
+  scope: "node" | "current_page";
   transport: FigmaTransport;
   includeVariables: boolean;
   includeCodeConnect: boolean;
@@ -105,6 +107,28 @@ export type FigmaExtractionOptions = {
   codeConnectLabel?: string;
   question?: string;
   mode: "live" | "demo";
+};
+
+export type SlackConnectionStatus = {
+  connected: boolean;
+  tools?: ToolDescriptor[];
+  message?: string;
+};
+
+export type SlackExtractionOptions = {
+  mode: "export" | "mcp";
+  importId?: string;
+  target?: string;
+  oldest?: string;
+  latest?: string;
+  includeFiles: boolean;
+};
+
+export type SlackImportResult = {
+  importId: string;
+  filename: string;
+  bytes: number;
+  expiresAt: string;
 };
 
 export type FigmaRunPayload = {

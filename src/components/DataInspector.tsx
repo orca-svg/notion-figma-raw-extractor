@@ -36,14 +36,15 @@ function JsonBlock({ value }: { value: unknown }) {
 }
 
 function VisualArtifacts({ event }: { event: ExtractionEvent }) {
-  const remoteUrls = event.artifacts?.length ? [] : figmaPreviewUrls(event.response);
+  // figmaPreviewUrls는 Figma 응답 형태를 전제하므로 Notion 이벤트에는 돌리지 않는다.
+  const remoteUrls = event.artifacts?.length || event.provider === "notion" ? [] : figmaPreviewUrls(event.response);
   if ((!event.artifacts?.length || !event.runId) && !remoteUrls.length) {
     return <div className="visual-empty"><span aria-hidden="true">◇</span><p>이 호출에는 저장된 시각 자료가 없습니다.</p></div>;
   }
   return (
     <div className="artifact-grid">
       {event.artifacts?.map((artifact) => {
-        const href = `/api/figma/runs/${encodeURIComponent(event.runId!)}/artifacts/${encodeURIComponent(artifact.id)}`;
+        const href = `/api/${event.provider ?? "figma"}/runs/${encodeURIComponent(event.runId!)}/artifacts/${encodeURIComponent(artifact.id)}`;
         return (
           <figure className="artifact-card" key={artifact.id}>
             {artifact.mimeType.startsWith("image/") ? <img src={href} alt={`${event.label}에서 추출한 ${artifact.kind}`} /> : <div className="artifact-file">{artifact.mimeType}</div>}

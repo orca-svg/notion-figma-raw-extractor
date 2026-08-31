@@ -17,6 +17,32 @@ type Props = {
   busy: boolean;
 };
 
+/** 코드가 눌러서 복사된다는 사실이 보이지 않아서, 복사 아이콘과 완료 피드백을 함께 둔다. */
+function CopyableCode({ value, label, className }: { value: string; label: string; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      className={`copyable-code${className ? ` ${className}` : ""}${copied ? " copied" : ""}`}
+      onClick={() => void copy()}
+      title={label}
+      aria-label={`${label} (${value.split("").join(" ")})`}
+    >
+      <span className="copyable-code-value">{value}</span>
+      <span className="copyable-code-hint" aria-hidden="true">{copied ? "복사됨" : "복사"}</span>
+    </button>
+  );
+}
+
 function identityLabel(value: unknown): string | undefined {
   if (!value || typeof value !== "object") return undefined;
   const record = value as Record<string, unknown>;
@@ -92,7 +118,7 @@ export function FigmaConnectionPanel({ statuses, transport, onTransportChange, o
           {status.authFlow ? (
             <div className={`auth-flow ${status.authFlow.state}`} role="status">
               <div><strong>{status.authFlow.kind === "codex" ? "Codex 인증" : "Figma 인증"}</strong><span>{status.authFlow.state === "waiting" ? "대기 중" : status.authFlow.state === "complete" ? "완료" : "확인 필요"}</span></div>
-              {status.authFlow.userCode ? <button type="button" className="device-code" onClick={() => void navigator.clipboard.writeText(status.authFlow!.userCode!)} title="기기 코드 복사">{status.authFlow.userCode}</button> : null}
+              {status.authFlow.userCode ? <CopyableCode className="device-code" value={status.authFlow.userCode} label="기기 코드 복사" /> : null}
               {status.authFlow.authUrl ? <a className="auth-link" href={status.authFlow.authUrl} target="_blank" rel="noreferrer">공식 인증 화면 열기 ↗</a> : null}
               {status.authFlow.message ? <p>{status.authFlow.message}</p> : null}
             </div>
@@ -122,7 +148,7 @@ export function FigmaConnectionPanel({ statuses, transport, onTransportChange, o
               <span>01</span><p><strong>Plugin</strong><small>{status.plugin?.connected ? "페어링됨" : "6자리 코드 필요"}</small></p><i aria-hidden="true" />
             </div>
             <div className={status.restOAuth?.connected ? "ready" : "waiting"}>
-              <span>02</span><p><strong>버전 이력</strong><small>{status.restOAuth?.connected ? "REST OAuth 연결됨" : "선택 연결"}</small></p><i aria-hidden="true" />
+              <span>02</span><p><strong>파일 메타데이터</strong><small>{status.restOAuth?.connected ? "댓글·작성자·버전 연결됨" : "필수 OAuth"}</small></p><i aria-hidden="true" />
             </div>
           </div>
           {status.plugin?.connected ? (
@@ -134,15 +160,15 @@ export function FigmaConnectionPanel({ statuses, transport, onTransportChange, o
           ) : pairing ? (
             <div className="plugin-pair-code" role="status">
               <span>Figma 플러그인에 입력</span>
-              <button type="button" onClick={() => void navigator.clipboard.writeText(pairing.code)} title="페어링 코드 복사">{pairing.code}</button>
+              <CopyableCode className="pair-code" value={pairing.code} label="페어링 코드 복사" />
               <p>{new Date(pairing.expiresAt).toLocaleTimeString()}까지 유효합니다. 플러그인을 열어 둔 채 입력하세요.</p>
             </div>
           ) : (
             <button className="primary-button full figma-primary" type="button" onClick={() => void createPairing()} disabled={busy}>6자리 페어링 코드 만들기</button>
           )}
           <div className="plugin-rest-actions">
-            {status.restOAuth?.connected ? <button className="secondary-button full" type="button" onClick={() => void handle(async () => { await onRestDisconnect(); await onRefresh("plugin"); })} disabled={busy}>버전 이력 연결 해제</button>
-              : <button className="secondary-button full" type="button" onClick={() => void handle(onRestOAuth)} disabled={busy}>Figma 버전 이력 OAuth 연결</button>}
+            {status.restOAuth?.connected ? <button className="secondary-button full" type="button" onClick={() => void handle(async () => { await onRestDisconnect(); await onRefresh("plugin"); })} disabled={busy}>메타데이터 연결 해제</button>
+              : <button className="secondary-button full" type="button" onClick={() => void handle(onRestOAuth)} disabled={busy}>Figma 메타데이터 OAuth 연결</button>}
             <button className="text-button" type="button" onClick={() => void handle(() => onRefresh("plugin"))} disabled={busy}>연결 상태 다시 확인</button>
           </div>
           <p className="credential-note">OAuth 브로커는 토큰 교환만 처리하며 파일·노드·이미지는 로컬에서 Figma API와 직접 주고받습니다.</p>
