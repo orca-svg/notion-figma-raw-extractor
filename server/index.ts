@@ -184,7 +184,18 @@ function getSession(req: Request, res: Response): Session {
   return session;
 }
 
-const allowedBrowserOrigins = new Set([APP_ORIGIN, API_ORIGIN, "http://127.0.0.1:5173", "http://127.0.0.1:8787"]);
+// 파일럿 사용자가 주소창에 localhost를 쳐도 막히지 않도록 두 loopback 표기를 모두 허용한다.
+// 플러그인 manifest의 devAllowedDomains도 http://localhost:8787을 쓴다.
+function loopbackOriginVariants(origin: string): string[] {
+  const match = /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.exec(origin.trim());
+  if (!match) return [origin];
+  const port = match[2] ?? "";
+  return [`http://127.0.0.1${port}`, `http://localhost${port}`];
+}
+
+const allowedBrowserOrigins = new Set(
+  [APP_ORIGIN, API_ORIGIN, "http://127.0.0.1:5173", "http://127.0.0.1:8787"].flatMap(loopbackOriginVariants),
+);
 app.use("/api", (req, res, next) => {
   const pluginBearerRoute = req.path === "/figma/plugin/pair/complete" || req.path.startsWith("/figma/plugin/jobs/");
   if (!/^(POST|PUT|PATCH|DELETE)$/i.test(req.method) || pluginBearerRoute) return next();
@@ -389,7 +400,8 @@ const notionLogout = (req: Request, res: Response) => {
 app.post(["/api/notion/auth/logout", "/api/auth/logout"], notionLogout);
 
 const notionExtract = async (req: Request, res: Response) => {
-  const session = getSession(req, res).notion;
+  const rootSession = getSession(req, res);
+  const session = rootSession.notion;
   const body = req.body as Partial<NotionExtractionInput>;
   const input: NotionExtractionInput = {
     target: typeof body.target === "string" ? body.target.trim() : "",
@@ -415,7 +427,8 @@ const notionExtract = async (req: Request, res: Response) => {
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.flushHeaders();
-  const run = createNotionRun(getSession(req, res).id, input);
+  // 헤더를 flush한 뒤 getSession을 다시 부르면 쿠키 설정이 ERR_HTTP_HEADERS_SENT로 터진다.
+  const run = createNotionRun(rootSession.id, input);
   addNotionRunToSession(session.runs, run);
   const runId = run.id;
   const write = (event: ExtractionEvent) => {
@@ -432,9 +445,11 @@ const notionExtract = async (req: Request, res: Response) => {
     res.write(`${JSON.stringify(enriched)}\n`);
   };
   let adapter: McpAdapter | undefined;
+  const controller = new AbortController();
+  req.once("aborted", () => controller.abort());
   try {
     adapter = input.mode === "demo" ? await DemoMcpAdapter.create() : await connectToNotionMcp(await ensureNotionAccessToken(session));
-    await runExtraction(adapter, input, write, (artifact) => storeNotionArtifact(run, artifact));
+    await runExtraction(adapter, input, write, (artifact) => storeNotionArtifact(run, artifact), controller.signal);
   } catch (error) {
     write({
       type: "fatal",
@@ -1072,6 +1087,17 @@ app.get("/api/slack/runs/:runId/bundle.zip", (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Content-Disposition", `attachment; filename="slack-mcp-trace-${run.id}.zip"`);
   res.send(Buffer.from(zip));
+});
+
+app.get("/api/slack/runs/:runId/artifacts/:artifactId", (req, res) => {
+  const run = findSlackRun(req, res);
+  if (!run) return;
+  const artifact = run.artifacts.get(String(req.params.artifactId));
+  if (!artifact) return res.status(404).json({ message: "artifact가 없습니다." });
+  res.setHeader("Content-Type", artifact.mimeType);
+  res.setHeader("Content-Length", String(artifact.bytes));
+  res.setHeader("Cache-Control", "private, max-age=1800");
+  res.send(Buffer.from(artifact.data));
 });
 
 app.get("/api/figma/runs/:runId", (req, res) => {

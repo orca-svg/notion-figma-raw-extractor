@@ -160,16 +160,25 @@ export async function runPluginFigmaExtraction(
       if (jsonPath && jsonUpload) run.bundleFiles.set(jsonPath, jsonUpload.data);
       const screenshotArtifact = node.screenshotSlot ? bySlot.get(node.screenshotSlot) : undefined;
       const screenshotUpload = node.screenshotSlot ? completed.artifacts.get(node.screenshotSlot) : undefined;
-      const screenshotPath = screenshotArtifact && screenshotUpload ? `screenshots/${stem}.png` : undefined;
-      if (screenshotPath && screenshotUpload && screenshotArtifact) {
+      const candidatePath = screenshotArtifact && screenshotUpload ? `screenshots/${stem}.png` : undefined;
+      // storeArtifact는 실행당 artifact 상한을 넘으면 undefined를 돌려주고 아무것도 쓰지 않는다.
+      // 그때도 경로를 적어 두면 page.json이 ZIP에 없는 PNG를 가리키게 되므로 저장에 성공한 경우만 기록한다.
+      let screenshotPath: string | undefined;
+      let screenshotOmitted: string | undefined;
+      if (candidatePath && screenshotUpload && screenshotArtifact) {
         const stored = storeArtifact(run, {
           data: screenshotUpload.data,
           mimeType: screenshotUpload.mimeType,
           kind: "screenshot",
           stem,
-          path: screenshotPath,
+          path: candidatePath,
         });
-        if (stored) artifactRefs.push(stored);
+        if (stored) {
+          artifactRefs.push(stored);
+          screenshotPath = candidatePath;
+        } else {
+          screenshotOmitted = "실행당 artifact 용량 상한을 넘어 PNG를 번들에 넣지 않았습니다.";
+        }
       }
       pageNodeIndex.push({
         nodeId: node.nodeId,
@@ -177,6 +186,7 @@ export async function runPluginFigmaExtraction(
         type: node.nodeType,
         jsonPath,
         screenshotPath,
+        screenshotOmitted,
         nodeCount: node.nodeCount,
         partial: node.partial,
         omittedNodes: node.omittedNodes,
@@ -217,7 +227,7 @@ export async function runPluginFigmaExtraction(
       pageName: completed.result.page.name,
       extractedAt: new Date().toISOString(),
       nodes: pageNodeIndex,
-      partial: completed.result.partial || pageNodeIndex.some((node) => !node.jsonPath || node.partial || Boolean(node.error)),
+      partial: completed.result.partial || pageNodeIndex.some((node) => !node.jsonPath || node.partial || Boolean(node.error) || Boolean(node.screenshotOmitted)),
       provenance: [
         { source: "plugin", detail: "열린 Figma 파일의 현재 페이지와 최상위 프레임 JSON·PNG·asset을 읽었습니다." },
         { source: "figma_rest", detail: "Figma REST API에서 파일 metadata, 전체 댓글, 버전 목록을 읽었습니다." },
@@ -262,7 +272,10 @@ export async function runPluginFigmaExtraction(
       message: "버전 작성자는 버전 간 관찰된 변경에 거칠게 귀속되며 클릭 단위 감사 로그가 아닙니다.",
     });
   } catch (error) {
-    throw new Error(`필수 버전 메타데이터를 읽지 못했습니다. ${error instanceof Error ? error.message : String(error)}`);
+    // 여기서 그냥 throw하면 history 단계가 running으로 남아 타임라인 스피너가 끝나지 않는다.
+    const reason = error instanceof Error ? error.message : String(error);
+    await finishEvent(historyStep, { state: "error", message: reason });
+    throw new Error(`필수 버전 메타데이터를 읽지 못했습니다. ${reason}`);
   }
 
   const context: DesignContextPackage = {

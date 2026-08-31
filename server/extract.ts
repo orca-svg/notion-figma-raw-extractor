@@ -211,17 +211,54 @@ function attachmentStem(url: string, kind: string): string {
 
 type AttachmentDownload = { mimeType: string; bytes: number; ref?: ArtifactRef; message?: string };
 
+// 첨부 URL은 페이지 본문에서 온 값이라 서버가 아무 주소나 따라가면 안 된다.
+// 서명 URL은 https이고 인라인 이미지는 data:라, 그 둘만 허용하고 사설·loopback 대역은 막는다.
+const BLOCKED_ATTACHMENT_HOSTS = /^(localhost|127\.|0\.|10\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|\[?::1\]?$|\[?fd|\[?fe80:)/i;
+
+function assertFetchableAttachmentUrl(url: string): void {
+  if (url.startsWith("data:")) return;
+  let parsed: URL;
+  try { parsed = new URL(url); }
+  catch { throw new Error("첨부 주소를 해석하지 못했습니다."); }
+  if (parsed.protocol !== "https:") throw new Error(`https가 아닌 첨부 주소는 내려받지 않습니다. (${parsed.protocol})`);
+  if (BLOCKED_ATTACHMENT_HOSTS.test(parsed.hostname)) throw new Error("사설 또는 로컬 주소의 첨부는 내려받지 않습니다.");
+}
+
+const ATTACHMENT_TIMEOUT_MS = 30_000;
+
 async function downloadAttachment(
   attachment: { kind: string; url: string },
   sink: ArtifactSink,
+  signal?: AbortSignal,
 ): Promise<AttachmentDownload> {
-  const response = await fetch(attachment.url, { redirect: "follow" });
+  assertFetchableAttachmentUrl(attachment.url);
+  const timeout = AbortSignal.timeout(ATTACHMENT_TIMEOUT_MS);
+  const response = await fetch(attachment.url, {
+    redirect: "follow",
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+  });
   if (!response.ok) throw new Error(`첨부를 받지 못했습니다. HTTP ${response.status}`);
   const mimeType = (response.headers.get("content-type") ?? "application/octet-stream").split(";")[0].trim();
-  const buffer = new Uint8Array(await response.arrayBuffer());
-  if (buffer.byteLength > MAX_ATTACHMENT_BYTES) {
-    return { mimeType, bytes: buffer.byteLength, message: "첨부가 25MB를 넘어 보관하지 않았습니다." };
+  // 전부 버퍼링한 뒤 크기를 재면 상한이 무의미하다. 읽으면서 넘는 순간 끊는다.
+  const reader = response.body?.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  let overflow = false;
+  if (reader) {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > MAX_ATTACHMENT_BYTES) { overflow = true; await reader.cancel(); break; }
+      chunks.push(value);
+    }
   }
+  if (overflow) {
+    return { mimeType, bytes, message: "첨부가 25MB를 넘어 보관하지 않았습니다." };
+  }
+  const buffer = new Uint8Array(bytes);
+  let offset = 0;
+  for (const chunk of chunks) { buffer.set(chunk, offset); offset += chunk.byteLength; }
   const ref = sink({ data: buffer, mimeType, kind: "asset", stem: attachmentStem(attachment.url, attachment.kind) });
   return { mimeType, bytes: buffer.byteLength, ref, message: ref ? undefined : "실행 artifact 용량 상한에 걸려 보관하지 않았습니다." };
 }
@@ -259,7 +296,7 @@ export type ArtifactSink = (input: {
   stem: string;
 }) => ArtifactRef | undefined;
 
-export async function runExtraction(adapter: McpAdapter, input: ExtractionInput, emit: EmitEvent, sink?: ArtifactSink): Promise<void> {
+export async function runExtraction(adapter: McpAdapter, input: ExtractionInput, emit: EmitEvent, sink?: ArtifactSink, signal?: AbortSignal): Promise<void> {
   let order = 0;
   const finalEvents = new Map<string, ExtractionEvent>();
   const runStep: StepRunner = async (definition, action, summarize, stateFor, artifactsFor) => {
@@ -568,7 +605,7 @@ export async function runExtraction(adapter: McpAdapter, input: ExtractionInput,
       const label = `첨부 ${index + 1} 원본 내려받기`;
       const stored = await runStep(
         { group: "attachment", label, request: { url: redactSignedUrl(attachment.url), kind: attachment.kind } },
-        async () => downloadAttachment(attachment, sink),
+        async () => downloadAttachment(attachment, sink, signal),
         (value) => ({ kind: attachment.kind, mimeType: value.mimeType, bytes: value.bytes, stored: Boolean(value.ref) }),
         (value) => (value.ref ? "success" : "warning"),
         (value) => (value.ref ? [value.ref] : undefined),

@@ -1,4 +1,4 @@
-import { strFromU8, unzipSync } from "fflate";
+import { strFromU8, Unzip, UnzipInflate } from "fflate";
 import type {
   SlackConversation,
   SlackFileRef,
@@ -143,11 +143,49 @@ function folderCandidates(conversation: SlackConversation): string[] {
   return [conversation.name, conversation.id].map((value) => value.replace(/\//g, "")).filter(Boolean);
 }
 
+/**
+ * 중앙 디렉터리가 신고한 크기는 업로더가 로컬 항목과 무관하게 조작할 수 있다.
+ * 그래서 실제로 압축을 풀면서 항목별·전체 상한을 강제한다. 상한을 넘으면 그 자리에서 중단하므로
+ * 신고 크기를 작게 속인 압축 폭탄도 메모리를 채우기 전에 걸린다.
+ */
+function inflateBounded(data: Uint8Array): Record<string, Uint8Array> {
+  const files: Record<string, Uint8Array> = {};
+  const unzip = new Unzip();
+  unzip.register(UnzipInflate);
+  let failure: Error | undefined;
+  let total = 0;
+  unzip.onfile = (file) => {
+    if (file.name.endsWith("/")) return;
+    let path: string;
+    try { path = safeZipPath(file.name); }
+    catch (error) { failure ??= error as Error; return; }
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    file.ondata = (error, chunk, final) => {
+      if (failure) return;
+      if (error) { failure = new Error("Slack Export ZIP 압축을 해제하지 못했습니다."); return; }
+      size += chunk.length;
+      total += chunk.length;
+      if (size > MAX_ENTRY_BYTES) { failure = new Error(`${path}의 압축 해제 크기가 50MB를 넘습니다.`); return; }
+      if (total > MAX_UNCOMPRESSED_BYTES) { failure = new Error("ZIP 전체 압축 해제 크기가 500MB를 넘습니다."); return; }
+      chunks.push(chunk);
+      if (!final) return;
+      const merged = new Uint8Array(size);
+      let offset = 0;
+      for (const part of chunks) { merged.set(part, offset); offset += part.length; }
+      files[path] = merged;
+    };
+    file.start();
+  };
+  try { unzip.push(data, true); }
+  catch { throw failure ?? new Error("Slack Export ZIP 압축을 해제하지 못했습니다."); }
+  if (failure) throw failure;
+  return files;
+}
+
 export function parseSlackExportZip(data: Uint8Array): SlackNormalizedExport {
   const inspected = inspectSlackExportZip(data);
-  let files: Record<string, Uint8Array>;
-  try { files = unzipSync(data); }
-  catch { throw new Error("Slack Export ZIP 압축을 해제하지 못했습니다."); }
+  const files = inflateBounded(data);
   const safeFiles: Record<string, Uint8Array> = {};
   const referencePath = inspected.find((entry) => /(^|\/)users\.json$/i.test(entry.path) || /(^|\/)org_users\.json$/i.test(entry.path))?.path;
   const rootPrefix = referencePath?.includes("/") ? referencePath.slice(0, referencePath.lastIndexOf("/") + 1) : "";
@@ -196,7 +234,9 @@ export function parseSlackExportZip(data: Uint8Array): SlackNormalizedExport {
         subtype: string(item.subtype),
         threadTs: string(item.thread_ts),
         parentTs: typeof item.thread_ts === "string" && item.thread_ts !== ts ? item.thread_ts : undefined,
-        edited: item.edited,
+        // message_changed 형태에서는 편집 정보가 item이 아니라 중첩된 message 쪽에 들어온다.
+        // text와 같은 경로로 폴백하지 않으면 편집자·편집 시각이 통째로 사라진다.
+        edited: item.edited ?? record(item.message).edited ?? record(item.previous_message).edited,
         reactions: item.reactions,
         files: attached.map((file) => file.id),
         raw,

@@ -94,6 +94,9 @@ function initialFigmaOptions(): FigmaExtractionOptions {
       ...INITIAL_FIGMA_OPTIONS,
       ...saved,
       transport,
+      // 페이지 추출은 Plugin 경로 전용이다. 다른 transport로 복원하면서 scope를 그대로 두면
+      // 링크 입력란이 숨겨진 채 실행 버튼도 잠기는 막다른 상태가 된다.
+      scope: transport === "plugin" && saved?.scope === "current_page" ? "current_page" : "node",
       targetMode: transport === "desktop" && saved?.targetMode === "selection" ? "selection" : "link",
       target: typeof saved?.target === "string" ? saved.target : "",
       mode: "live",
@@ -381,6 +384,7 @@ export default function App() {
     setFigmaOptions((current) => ({
       ...current,
       transport,
+      scope: transport === "plugin" ? current.scope : "node",
       targetMode: transport !== "desktop" && current.targetMode === "selection" ? "link" : current.targetMode,
       includeLibraries: transport === "remote" || transport === "codex" ? current.includeLibraries : false,
       includeAssets: transport !== "desktop" ? current.includeAssets : false,

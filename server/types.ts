@@ -198,6 +198,8 @@ export type FigmaPageNodeIndex = {
   type: string;
   jsonPath?: string;
   screenshotPath?: string;
+  /** PNG를 만들었지만 번들에 넣지 못한 경우의 사유. 채워지면 page.json은 partial로 표시된다. */
+  screenshotOmitted?: string;
   nodeCount: number;
   partial: boolean;
   omittedNodes?: number;
