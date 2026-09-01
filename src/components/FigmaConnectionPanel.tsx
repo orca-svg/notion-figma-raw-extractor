@@ -12,6 +12,7 @@ type Props = {
   onCodexFigmaOAuth: () => Promise<CodexAuthFlow>;
   onCodexCancel: () => Promise<void>;
   onPluginPair: () => Promise<PluginPairing>;
+  onPluginDisconnect: () => Promise<void>;
   onRestPat: (token: string) => Promise<void>;
   onRestDisconnect: () => Promise<void>;
   busy: boolean;
@@ -54,8 +55,9 @@ function identityLabel(value: unknown): string | undefined {
   return undefined;
 }
 
-export function FigmaConnectionPanel({ statuses, transport, onTransportChange, onRefresh, onOAuth, onDisconnect, onCodexLogin, onCodexFigmaOAuth, onCodexCancel, onPluginPair, onRestPat, onRestDisconnect, busy }: Props) {
-  const [error, setError] = useState<string>();
+export function FigmaConnectionPanel({ statuses, transport, onTransportChange, onRefresh, onOAuth, onDisconnect, onCodexLogin, onCodexFigmaOAuth, onCodexCancel, onPluginPair, onPluginDisconnect, onRestPat, onRestDisconnect, busy }: Props) {
+  // 실패한 동작을 그대로 들고 있어야 "다시 시도"가 같은 일을 재실행할 수 있다.
+  const [error, setError] = useState<{ message: string; retry?: () => Promise<void> }>();
   const [pairing, setPairing] = useState<PluginPairing>();
   const [restPat, setRestPat] = useState("");
   const status = statuses[transport];
@@ -64,7 +66,7 @@ export function FigmaConnectionPanel({ statuses, transport, onTransportChange, o
     try {
       await action();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError({ message: reason instanceof Error ? reason.message : String(reason), retry: action });
     }
   };
   const startCodexFlow = async (action: () => Promise<CodexAuthFlow>) => {
@@ -73,14 +75,16 @@ export function FigmaConnectionPanel({ statuses, transport, onTransportChange, o
       await action();
       await onRefresh("codex");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError({ message: reason instanceof Error ? reason.message : String(reason) });
     }
   };
-  const createPairing = async () => {
-    setError(undefined);
-    try { setPairing(await onPluginPair()); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
-  };
+  const createPairing = () => handle(async () => { setPairing(await onPluginPair()); });
+  /** 연결을 끊고 곧바로 새 코드를 띄운다. 플러그인은 다음 poll에서 페어링 화면으로 돌아간다. */
+  const repairPlugin = () => handle(async () => {
+    await onPluginDisconnect();
+    setPairing(await onPluginPair());
+    await onRefresh("plugin");
+  });
 
   return (
     <section className="panel connection-panel figma-connection" aria-labelledby="figma-connection-title">
@@ -157,12 +161,19 @@ export function FigmaConnectionPanel({ statuses, transport, onTransportChange, o
               <div className="connected-line"><span className="status-dot success" /><strong>Figma Plugin 준비됨</strong></div>
               <p>{status.plugin.meta?.user?.name ?? "현재 사용자"} · {status.plugin.meta?.editorType === "figjam" ? "FigJam" : "Figma Design"} · {status.plugin.meta?.pageName ?? "현재 페이지"}</p>
               {status.plugin.meta?.fileKey ? <code>{status.plugin.meta.fileKey}</code> : null}
+              <div className="inline-actions">
+                <button className="text-button" type="button" onClick={() => void repairPlugin()} disabled={busy}>연결 끊고 새 코드 발급</button>
+              </div>
             </div>
           ) : pairing ? (
             <div className="plugin-pair-code" role="status">
               <span>Figma 플러그인에 입력</span>
               <CopyableCode className="pair-code" value={pairing.code} label="페어링 코드 복사" />
               <p>{new Date(pairing.expiresAt).toLocaleTimeString()}까지 유효합니다. 플러그인을 열어 둔 채 입력하세요.</p>
+              <div className="pair-code-actions">
+                <button type="button" onClick={() => void createPairing()} disabled={busy}>코드 다시 만들기</button>
+                <button type="button" onClick={() => setPairing(undefined)} disabled={busy}>닫기</button>
+              </div>
             </div>
           ) : (
             <button className="primary-button full figma-primary" type="button" onClick={() => void createPairing()} disabled={busy}>6자리 페어링 코드 만들기</button>
@@ -221,7 +232,12 @@ export function FigmaConnectionPanel({ statuses, transport, onTransportChange, o
           {status.message ? <p className="connection-detail">{status.message}</p> : null}
         </div>
       )}
-      {error ? <p className="inline-error" role="alert">{error}</p> : null}
+      {error ? (
+        <div className="inline-error" role="alert">
+          <p>{error.message}</p>
+          {error.retry ? <button className="text-button" type="button" onClick={() => void handle(error.retry!)} disabled={busy}>다시 시도</button> : null}
+        </div>
+      ) : null}
     </section>
   );
 }

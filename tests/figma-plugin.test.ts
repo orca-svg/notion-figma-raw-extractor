@@ -47,8 +47,12 @@ describe("Figma Plugin manifest", () => {
     expect(manifest.networkAccess.devAllowedDomains).toEqual(["http://localhost:8787"]);
     expect(ui).toContain('const API = "http://localhost:8787";');
     expect(code).toContain("width: 320, height: 330");
-    expect(code).toContain("figma.ui.resize(280, 176)");
+    expect(code).toContain("figma.ui.resize(280, 204)");
     expect(ui).toContain('type: "compact-ui"');
+    // 세션이 끊기면 플러그인이 스스로 페어링 화면으로 돌아가야 한다. 그 왕복이 code.ts와 짝을 이룬다.
+    expect(ui).toContain('type: "expand-ui"');
+    expect(code).toContain("figma.ui.resize(320, 330)");
+    expect(ui).toContain("resetPairing(expired.message");
   });
 });
 
@@ -65,7 +69,7 @@ describe("Figma Plugin pairing bridge", () => {
 
     const pending = bridge.requestExtraction("session-a", target);
     const job = await bridge.nextJob(connection.sessionToken, undefined, 100);
-    expect(job).toMatchObject({ type: "extract_node", target, options: { maxNodes: 5_000, maxJsonBytes: 20 * 1024 * 1024 } });
+    expect(job).toMatchObject({ type: "extract_node", target, options: { maxNodes: 500_000, maxJsonBytes: 24 * 1024 * 1024 } });
     const png = Uint8Array.from([137, 80, 78, 71]);
     bridge.uploadArtifact(connection.sessionToken, job!.id, "screenshot", "image/png", png);
     bridge.submitResult(connection.sessionToken, job!.id, {
@@ -108,6 +112,63 @@ describe("Figma Plugin pairing bridge", () => {
       artifacts: [],
     });
     await expect(first).rejects.toThrow(/file key/);
+  });
+
+  it("Trace Studio에서 연결을 끊으면 진행 중인 작업과 세션이 함께 정리된다", async () => {
+    const bridge = new FigmaPluginBridge();
+    const connection = connect(bridge);
+    const running = bridge.requestExtraction("owner", target);
+    const settled = running.then(() => "완료", (error: Error) => error.message);
+    await bridge.nextJob(connection.sessionToken, undefined, 100);
+
+    expect(bridge.disconnect("owner")).toBe(true);
+    expect(await settled).toMatch(/Trace Studio에서 연결을 끊었습니다/);
+    expect(bridge.status("owner").connected).toBe(false);
+    // 플러그인은 다음 poll에서 이 오류를 받아 스스로 페어링 화면으로 돌아간다.
+    await expect(bridge.nextJob(connection.sessionToken, undefined, 100)).rejects.toThrow(/세션이 만료/);
+    expect(bridge.disconnect("owner")).toBe(false);
+  });
+
+  it("추출이 길어져도 하트비트가 연결 만료와 90초 작업 타임아웃을 함께 막는다", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-01T00:00:00Z"));
+
+    // 하트비트가 없으면: 추출 중 플러그인은 아무 요청도 보내지 않고, 화면의 2초 status 폴링이
+    // cleanup을 돌려 35초 만에 연결과 진행 중인 작업을 함께 끊는다. 페이지 추출이 늘 실패하던 경로다.
+    const bare = new FigmaPluginBridge();
+    const bareConnection = connect(bare, "owner-stale");
+    const stalled = bare.requestPageExtraction("owner-stale", target.fileKey, "design");
+    const settled = stalled.then(() => "완료", (error: Error) => error.message);
+    await bare.nextJob(bareConnection.sessionToken, undefined, 100);
+    vi.advanceTimersByTime(36_000);
+    expect(bare.status("owner-stale").connected).toBe(false);
+    expect(await settled).toMatch(/연결이 만료/);
+
+    const bridge = new FigmaPluginBridge();
+    const connection = connect(bridge);
+    const running = bridge.requestPageExtraction("owner", target.fileKey, "design");
+    const job = await bridge.nextJob(connection.sessionToken, undefined, 100);
+    expect(job?.type).toBe("extract_page");
+
+    // 10초마다 살아 있음을 알리면 총 소요가 90초를 넘겨도 작업이 유지된다.
+    for (let elapsed = 0; elapsed < 150_000; elapsed += 10_000) {
+      vi.advanceTimersByTime(10_000);
+      bridge.heartbeat(connection.sessionToken, job!.id);
+      expect(bridge.status("owner").connected).toBe(true);
+    }
+
+    bridge.submitResult(connection.sessionToken, job!.id, {
+      scope: "current_page",
+      nodeCount: 3,
+      partial: false,
+      meta: { pluginVersion: "1.1.0", editorType: "figma", fileKey: target.fileKey, pageId: "1:0", pageName: "주식" },
+      page: { id: "1:0", name: "주식", nodes: [{ nodeId: "1:2", nodeName: "Frame", nodeType: "FRAME", nodeCount: 3, partial: false }] },
+      artifacts: [],
+    });
+    expect((await running).result.page?.name).toBe("주식");
+
+    // 작업이 끝난 뒤의 하트비트는 남은 작업이 없으므로 거부된다.
+    expect(() => bridge.heartbeat(connection.sessionToken, job!.id)).toThrow(/작업이 없거나/);
   });
 
   it("가짜 플러그인이 long-poll로 현재 snapshot과 artifact를 반환하는 전체 흐름을 실행한다", async () => {
@@ -407,6 +468,10 @@ describe("Figma 개인 액세스 토큰 연결", () => {
     await expect(connectFigmaRestPat(session, "figd_bad")).rejects.toThrow(/토큰을 확인하지 못했습니다.*Invalid token/);
     expect(session).toMatchObject({ kind: undefined, accessToken: undefined });
     expect(figmaRestOAuthStatus(session).connected).toBe(false);
+    // 만료·오타는 사용자 입력 오류다. 500으로 올리면 서버 장애처럼 보이고 화면도 재시도를 권하지 못한다.
+    const rejected = await connectFigmaRestPat({}, "figd_bad").then(() => undefined, (reason) => reason as FigmaRestApiError);
+    expect(rejected).toBeInstanceOf(FigmaRestApiError);
+    expect(rejected?.status).toBe(400);
   });
 
   it("PAT 세션은 refresh를 시도하지 않고 재발급을 안내한다", async () => {

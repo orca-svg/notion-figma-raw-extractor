@@ -30,6 +30,7 @@ import {
   beginFigmaRestOAuth,
   clearFigmaRestOAuth,
   connectFigmaRestPat,
+  FigmaRestApiError,
   figmaRestOAuthStatus,
   finishFigmaRestOAuth,
 } from "./figma-rest-client.js";
@@ -147,7 +148,10 @@ const SLACK_SCOPES = "channels:history groups:history mpim:history im:history ch
 const COOKIE = "mcp_trace_studio_session";
 
 app.disable("x-powered-by");
-app.use("/api/figma/plugin/jobs/:jobId/result", express.json({ limit: "22mb" }));
+// 플러그인 artifact는 JSON 프레임도 20MB까지 raw로 받는다. 아래 전역 express.json(64kb)이 먼저
+// 집어삼키면 64KiB를 넘는 프레임 JSON만 "request entity too large"로 끊긴다.
+app.use("/api/figma/plugin/jobs/:jobId/artifacts/:slot", express.raw({ type: "*/*", limit: "64mb" }));
+app.use("/api/figma/plugin/jobs/:jobId/result", express.json({ limit: "64mb" }));
 app.use(express.json({ limit: "64kb" }));
 
 function parseCookies(req: Request): Record<string, string> {
@@ -704,6 +708,11 @@ app.post("/api/figma/plugin/pair/start", (req, res) => {
   res.json(figmaPluginBridge.createPairing(session.id));
 });
 
+app.post("/api/figma/plugin/disconnect", (req, res) => {
+  const session = getSession(req, res);
+  res.json({ disconnected: figmaPluginBridge.disconnect(session.id) });
+});
+
 app.get("/api/figma/plugin/status", (req, res) => {
   const session = getSession(req, res);
   res.json(figmaPluginBridge.status(session.id));
@@ -757,7 +766,7 @@ app.get("/api/figma/plugin/jobs/next", async (req, res) => {
   }
 });
 
-app.put("/api/figma/plugin/jobs/:jobId/artifacts/:slot", express.raw({ type: "*/*", limit: "20mb" }), (req, res) => {
+app.put("/api/figma/plugin/jobs/:jobId/artifacts/:slot", (req, res) => {
   try {
     const token = bearerToken(req.headers.authorization);
     const body = req.body instanceof Buffer ? new Uint8Array(req.body) : new Uint8Array();
@@ -765,6 +774,17 @@ app.put("/api/figma/plugin/jobs/:jobId/artifacts/:slot", express.raw({ type: "*/
     res.status(204).end();
   } catch (error) {
     res.status(400).json({ message: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/figma/plugin/jobs/:jobId/heartbeat", (req, res) => {
+  try {
+    const token = bearerToken(req.headers.authorization);
+    if (!token) return res.status(401).json({ message: "플러그인 세션 토큰이 필요합니다." });
+    figmaPluginBridge.heartbeat(token, String(req.params.jobId));
+    return res.status(204).end();
+  } catch (error) {
+    return res.status(400).json({ message: error instanceof Error ? error.message : String(error) });
   }
 });
 
@@ -1148,9 +1168,20 @@ if (process.env.NODE_ENV === "production" && existsSync(dist)) {
 
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   const message = error instanceof Error ? error.message : String(error);
+  // Figma REST가 알려준 사유는 그 상태 코드가 진실이다. 401은 재인증, 429는 한도 초과처럼
+  // 화면이 다르게 안내해야 하는데 전부 500으로 뭉개면 구분할 방법이 사라진다.
+  if (error instanceof FigmaRestApiError) {
+    if (error.retryAfter) res.setHeader("Retry-After", String(error.retryAfter));
+    return res.status(error.status >= 400 && error.status < 600 ? error.status : 502).json({ message });
+  }
   res.status(500).json({ message });
 });
 
-app.listen(PORT, "127.0.0.1", () => {
-  process.stdout.write(`MCP Trace Studio API: http://127.0.0.1:${PORT}\n`);
-});
+// 미들웨어 순서 같은 실수는 bridge 단위 테스트로는 잡히지 않는다. 테스트에서 앱을 그대로 띄운다.
+export { app };
+
+if (process.env.NODE_ENV !== "test") {
+  app.listen(PORT, "127.0.0.1", () => {
+    process.stdout.write(`MCP Trace Studio API: http://127.0.0.1:${PORT}\n`);
+  });
+}

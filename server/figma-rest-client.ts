@@ -91,7 +91,9 @@ export async function connectFigmaRestPat(session: FigmaRestOAuthSession, token:
     clearFigmaRestOAuth(session);
     // /me 단계의 실패는 파일 권한이 아니라 토큰 자체의 문제다. 원문은 뒤에 붙여 진단을 남긴다.
     const detail = error instanceof FigmaRestApiError ? error.message.replace(/^[^.]*\.\s*/, "") : error instanceof Error ? error.message : String(error);
-    throw new Error(`Figma 개인 액세스 토큰을 확인하지 못했습니다. 토큰과 scope를 다시 확인해 주세요.${detail ? ` (${detail})` : ""}`);
+    // 붙여넣은 토큰이 틀렸거나 만료된 것이므로 사용자 입력 오류(400)다. 그대로 500으로 올리면
+    // 화면이 서버 장애로 읽고, 다시 발급하라는 안내로 이어지지 못한다.
+    throw new FigmaRestApiError(`Figma 개인 액세스 토큰을 확인하지 못했습니다. 토큰과 scope를 다시 확인해 주세요.${detail ? ` (${detail})` : ""}`, 400);
   }
 }
 

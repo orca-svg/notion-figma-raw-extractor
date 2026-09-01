@@ -4,6 +4,9 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+# 대형 파일은 파트 합계가 GB 단위로 간다. 기본 힙(약 4GB)으로는 ZIP 조립에서 죽는다.
+$env:NODE_OPTIONS = "$($env:NODE_OPTIONS) --max-old-space-size=8192".Trim()
+
 $WebUrl = "http://127.0.0.1:5173/figma"
 $PluginCode = Join-Path $ProjectRoot "plugins\figma-trace\dist\code.js"
 $PluginUi = Join-Path $ProjectRoot "plugins\figma-trace\dist\ui.html"

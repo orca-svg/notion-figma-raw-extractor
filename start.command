@@ -28,6 +28,9 @@ if [[ ! -x "$SCRIPT_DIR/node_modules/.bin/tsx" \
   "$SCRIPT_DIR/setup.command" --non-interactive
 fi
 
+# 대형 파일은 파트 합계가 GB 단위로 간다. 기본 힙(약 4GB)으로는 ZIP 조립에서 죽는다.
+export NODE_OPTIONS="${NODE_OPTIONS:-} --max-old-space-size=8192"
+
 api_ready() {
   curl --silent --fail --max-time 1 "$API_URL" 2>/dev/null | grep -q '"ok":true'
 }

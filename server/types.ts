@@ -197,6 +197,8 @@ export type FigmaPageNodeIndex = {
   name: string;
   type: string;
   jsonPath?: string;
+  /** 예산을 넘어 서브트리로 나뉜 조각들. 각 파일은 단독으로 파싱되며 __part 참조로 이어진다. */
+  parts?: Array<{ path: string; nodeId: string; name: string; type: string; nodeCount: number; parentNodeId?: string; bytes: number }>;
   screenshotPath?: string;
   /** PNG를 만들었지만 번들에 넣지 못한 경우의 사유. 채워지면 page.json은 partial로 표시된다. */
   screenshotOmitted?: string;
@@ -215,6 +217,8 @@ export type FigmaPagePackage = {
   extractedAt: string;
   nodes: FigmaPageNodeIndex[];
   partial: boolean;
+  /** 에셋 회계. 번들만 보고도 무엇이 빠졌는지 알 수 있어야 한다. */
+  assets?: { stored: number; deduplicated: number; omitted: { cap: number; oversized: number; failed: number; storeRejected: number } };
   provenance: Array<{ source: "plugin" | "figma_rest"; detail: string }>;
 };
 
@@ -282,6 +286,7 @@ export type FigmaPluginPageNodeResult = {
   nodeName: string;
   nodeType: string;
   jsonSlot?: string;
+  parts?: Array<{ slot: string; nodeId: string; nodeName: string; nodeType: string; nodeCount: number; parentNodeId?: string; bytes: number }>;
   screenshotSlot?: string;
   nodeCount: number;
   partial: boolean;
@@ -297,7 +302,9 @@ export type FigmaPluginExtractionResult = {
   omittedNodes?: number;
   meta: FigmaPluginMeta & { nodeId?: string; nodeName?: string; nodeType?: string };
   page?: { id: string; name: string; nodes: FigmaPluginPageNodeResult[] };
-  artifacts: Array<{ slot: string; kind: ArtifactRef["kind"] | "json"; mimeType: string; name: string; bytes: number }>;
+  /** 담지 못한 에셋의 사유별 개수. 침묵하면 무엇을 잃었는지 알 길이 없다. */
+  omittedAssets?: { cap: number; oversized: number; failed: number; duplicate: number };
+  artifacts: Array<{ slot: string; kind: ArtifactRef["kind"] | "json"; mimeType: string; name: string; bytes: number; usages?: Array<{ nodeId: string; nodeName: string }> }>;
 };
 
 export type SlackImportRecord = {

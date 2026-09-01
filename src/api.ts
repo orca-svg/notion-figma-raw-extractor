@@ -127,6 +127,11 @@ export async function startPluginPairing(): Promise<PluginPairing> {
   return readJson<PluginPairing>(response);
 }
 
+export async function disconnectFigmaPlugin(): Promise<void> {
+  const response = await mutate("/api/figma/plugin/disconnect", { method: "POST" });
+  if (!response.ok) throw new Error("Figma Plugin 연결 해제에 실패했습니다.");
+}
+
 export async function startFigmaRestOAuth(): Promise<string> {
   const response = await mutate("/api/figma/rest/auth/start", { method: "POST" });
   return (await readJson<{ authUrl: string }>(response)).authUrl;

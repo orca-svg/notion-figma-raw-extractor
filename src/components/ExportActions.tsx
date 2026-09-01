@@ -18,10 +18,16 @@ export function ExportActions({ provider, runId }: { provider: "notion" | "figma
   };
 
   return (
-    <div className="export-actions" aria-label="실행 결과 내보내기">
-      <button type="button" onClick={() => void copy()} disabled={copyState === "loading"}>{copyState === "loading" ? "준비 중" : copyState === "done" ? "JSON 복사됨" : copyState === "error" ? "다시 복사" : "전체 JSON 복사"}</button>
-      <a href={`/api/${provider}/runs/${encodeURIComponent(runId)}/bundle.zip`} download>ZIP 번들 받기</a>
-      <small>실행 후 30분 동안 제공됩니다.</small>
-    </div>
+    <section className="export-actions" aria-labelledby="export-actions-title">
+      <div className="export-actions-copy">
+        <p className="eyebrow">추출 완료</p>
+        <h3 id="export-actions-title">실행 결과 내보내기</h3>
+        <small>실행 후 1시간 동안, 최근 3개 실행까지 받을 수 있습니다.</small>
+      </div>
+      <div className="export-actions-buttons">
+        <button type="button" onClick={() => void copy()} disabled={copyState === "loading"}>{copyState === "loading" ? "준비 중" : copyState === "done" ? "JSON 복사됨" : copyState === "error" ? "다시 복사" : "전체 JSON 복사"}</button>
+        <a href={`/api/${provider}/runs/${encodeURIComponent(runId)}/bundle.zip`} download>ZIP 번들 받기</a>
+      </div>
+    </section>
   );
 }

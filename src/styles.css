@@ -23,7 +23,10 @@
 
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
-body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--studio); }
+/* 한글은 기본값에서 음절 사이가 잘린다. 띄어쓰기에서만 줄을 넘긴다. */
+body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--studio); word-break: keep-all; }
+/* 한 덩어리가 폭보다 길 때만 강제로 끊어 컨트롤 밖으로 새지 않게 한다. */
+button, summary, label, .field span { overflow-wrap: break-word; }
 button, input, textarea { font: inherit; }
 button, summary, a, input, textarea { outline-color: color-mix(in srgb, var(--provider, var(--notion)) 55%, transparent); outline-offset: 3px; }
 button { color: inherit; }
@@ -64,7 +67,6 @@ code, pre { font-family: var(--mono); }
 .notion-stage { border: 1px solid var(--line); background-color: rgba(252,252,253,.72); background-image: repeating-linear-gradient(0deg, transparent, transparent 35px, rgba(53,103,122,.065) 36px); }
 .figma-stage { position: relative; border: 1px solid #d9d5ef; background-color: #e9e7f3; background-image: radial-gradient(circle, rgba(110,87,210,.17) 1px, transparent 1px); background-size: 18px 18px; }
 .slack-stage { border: 1px solid #cadcd3; background: linear-gradient(135deg, #edf5f1, #e2eee8); }
-.slack-stage-mark { display: grid; place-items: center; width: 104px; height: 104px; border-radius: 24px; color: white; background: var(--slack); box-shadow: 0 15px 22px rgba(31,35,48,.16); font: 800 52px/1 var(--display); }
 .stage-copy { position: relative; z-index: 1; }
 .app-icon-showcase { position: relative; z-index: 1; min-height: 138px; display: flex; align-items: center; }
 .app-icon-showcase img { display: block; width: 104px; height: 104px; border-radius: 23%; filter: drop-shadow(0 15px 22px rgba(31,35,48,.16)); }
@@ -110,13 +112,22 @@ code, pre { font-family: var(--mono); }
 .completion-bar span { color: var(--muted); font: 720 9px/1 var(--mono); text-transform: uppercase; letter-spacing: .1em; }
 .completion-bar strong { font-size: 13px; }
 .completion-bar button { border: 0; background: transparent; color: var(--provider); font-weight: 750; cursor: pointer; }
-.export-actions { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; padding: 10px 12px; width: max-content; max-width: 100%; border-radius: 13px; background: rgba(252,252,253,.75); border: 1px solid #d9d5ef; }
-.export-actions button, .export-actions a { border: 0; border-radius: 9px; padding: 8px 10px; color: #4d3aa4; background: #e8e3fb; font-size: 11px; font-weight: 760; text-decoration: none; cursor: pointer; }
-.export-actions a { color: white; background: var(--figma); }
-.export-actions small { color: var(--muted); font-size: 10px; }
+/* 타임라인 마지막 단계 바로 아래에 둔다. 추출이 끝난 자리에서 바로 눈에 들어와야 한다. */
+.export-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 18px; margin-top: 20px; padding: 16px 18px; border: 1px solid color-mix(in srgb, var(--provider) 26%, var(--line)); border-radius: 14px; background: color-mix(in srgb, var(--provider) 6%, var(--surface)); }
+.export-actions .eyebrow { margin: 0 0 5px; }
+.export-actions h3 { margin: 0; font-size: 14px; }
+.export-actions small { display: block; margin-top: 5px; color: var(--muted); font-size: 10.5px; }
+.export-actions-buttons { display: flex; gap: 8px; }
+.export-actions button, .export-actions a { border: 0; border-radius: 9px; padding: 10px 14px; color: var(--provider); background: color-mix(in srgb, var(--provider) 14%, white); font-size: 11px; font-weight: 760; text-decoration: none; cursor: pointer; }
+.export-actions a { color: white; background: var(--provider); }
+.export-actions button:disabled { opacity: .55; cursor: default; }
 .page-error, .inline-error { color: #7f2e25; background: #f5e2df; border: 1px solid #ddb7b2; border-radius: 10px; padding: 11px 13px; font-size: 12px; }
 .page-error { margin-bottom: 14px; }
-.inline-error { margin: 12px 0 0; }
+.inline-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0 0; }
+.inline-error p { margin: 0; }
+.inline-error .text-button { flex: 0 0 auto; color: #7f2e25; }
+.plugin-ready-card .inline-actions { margin-top: 9px; }
+.plugin-ready-card .text-button { color: var(--figma); }
 
 .workspace { display: grid; grid-template-columns: 320px minmax(470px, 1fr) minmax(390px, 470px); align-items: start; gap: 14px; margin-bottom: 56px; }
 .setup-column { position: sticky; top: 96px; display: grid; gap: 12px; }
@@ -172,7 +183,8 @@ button:disabled { cursor: not-allowed; opacity: .46; }
 .connection-instructions ol { margin: 0 0 13px; padding-left: 19px; color: #565d6b; font-size: 11px; line-height: 1.8; }
 .connection-detail { max-height: 80px; overflow: auto; overflow-wrap: anywhere; }
 .segmented-control { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; padding: 3px; border-radius: 12px; background: #e8e9ee; }
-.segmented-control button { min-height: 34px; border: 0; border-radius: 9px; color: var(--muted); background: transparent; cursor: pointer; font-size: 11px; font-weight: 760; transition: transform .1s ease, background-color .15s ease, color .15s ease; }
+/* grid 항목은 기본 min-width가 auto라 글자 폭 밑으로 못 줄어든다. 0으로 풀어야 컨트롤이 넘치지 않는다. */
+.segmented-control button { min-width: 0; min-height: 34px; border: 0; border-radius: 9px; color: var(--muted); background: transparent; cursor: pointer; font-size: 11px; font-weight: 760; transition: transform .1s ease, background-color .15s ease, color .15s ease; }
 .segmented-control button.active { color: var(--graphite); background: white; box-shadow: 0 2px 7px rgba(31,35,48,.08); }
 .figma-connection > .segmented-control { grid-template-columns: repeat(4, 1fr); margin-bottom: 13px; }
 .segmented-control.compact { width: 172px; }
@@ -209,7 +221,12 @@ button:disabled { cursor: not-allowed; opacity: .46; }
 .plugin-disclosure span { color: #17614f; }
 .plugin-pair-code { padding: 13px; border: 1px dashed #9386cd; border-radius: 12px; text-align: center; background: #f4f1fc; }
 .plugin-pair-code > span { display: block; color: var(--muted); font: 700 8px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; }
-.plugin-pair-code button { width: 100%; margin: 10px 0 7px; border: 0; color: #3f2d89; background: transparent; cursor: pointer; font: 760 28px/1 var(--mono); letter-spacing: .18em; }
+/* 코드 버튼에만 건다. 예전엔 .plugin-pair-code button이라 카드 안 액션까지 28px 코드 서체가 됐다. */
+.plugin-pair-code .pair-code { width: 100%; margin: 10px 0 7px; border: 0; color: #3f2d89; background: transparent; cursor: pointer; font: 760 28px/1 var(--mono); letter-spacing: .18em; }
+/* 카드의 다른 글자가 8~9px이라 액션도 그 스케일에 맞춘다. 색은 '복사' 칩(#5b4bb0)을 그대로 쓴다. */
+.pair-code-actions { display: flex; gap: 6px; margin-top: 10px; padding-top: 9px; border-top: 1px dashed #cfc7ea; }
+.pair-code-actions button { flex: 1 1 auto; white-space: nowrap; padding: 6px 9px; border: 1px solid #d5cfee; border-radius: 8px; color: #5b4bb0; background: rgba(252,252,253,.7); font-size: 10px; font-weight: 700; line-height: 1.4; cursor: pointer; transition: background-color .15s ease, border-color .15s ease; }
+.pair-code-actions button:hover:not(:disabled) { border-color: #b3a7e0; background: white; }
 .plugin-pair-code p { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.45; }
 /* 코드가 클릭으로 복사된다는 걸 알 수 있도록 항상 보이는 '복사' 표시를 붙인다. */
 .copyable-code { display: flex; align-items: center; justify-content: center; gap: 9px; transition: background-color .15s ease, color .15s ease; }
@@ -472,8 +489,9 @@ footer div { display: flex; gap: 18px; }
   .path-grid, .setup-column { grid-template-columns: 1fr; }
   .path-item, .path-item:nth-child(3n), .path-item:nth-child(5n) { border-right: 0; border-bottom: 1px solid var(--line); }
   .completion-bar, .completion-bar div { align-items: flex-start; flex-direction: column; gap: 6px; }
-  .export-actions { width: 100%; flex-wrap: wrap; }
-  .export-actions small { width: 100%; }
+  .export-actions { align-items: flex-start; flex-direction: column; }
+  .export-actions-buttons { width: 100%; }
+  .export-actions-buttons button, .export-actions-buttons a { flex: 1; text-align: center; }
   .trace { padding: 16px 12px; border-left: 0; border-right: 0; margin-left: -9px; margin-right: -9px; border-radius: 0; }
   .timeline { padding-left: 29px; }
   .timeline::before { left: 9px; }

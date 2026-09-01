@@ -6,6 +6,7 @@ import {
   disconnect,
   disconnectFigmaRemote,
   disconnectFigmaRest,
+  disconnectFigmaPlugin,
   getFigmaStatus,
   getStatus,
   startFigmaOAuth,
@@ -26,6 +27,7 @@ import {
 } from "./api";
 import figmaAppIcon from "./assets/figma-app-icon.svg";
 import notionAppIcon from "./assets/notion-app-icon.svg";
+import slackAppIcon from "./assets/slack-app-icon.svg";
 import { ConnectionPanel } from "./components/ConnectionPanel";
 import { DataInspector } from "./components/DataInspector";
 import { ExportActions } from "./components/ExportActions";
@@ -191,7 +193,7 @@ function SlackStage({ mode }: { mode: SlackExtractionOptions["mode"] }) {
   return (
     <section className="provider-stage slack-stage">
       <div className="provider-stage-inner">
-        <div className="app-icon-showcase"><span className="slack-stage-mark" aria-hidden="true">#</span></div>
+        <div className="app-icon-showcase slack-app-showcase"><img src={slackAppIcon} alt="Slack 앱 아이콘" /></div>
         <p>{mode === "export" ? "관리자가 전달한 Slack JSON Export ZIP을 사용자·대화·스레드·파일 참조로 정규화합니다." : "Slack MCP OAuth 사용자가 접근할 수 있는 채널과 스레드의 최신 정보를 읽습니다."}</p>
       </div>
     </section>
@@ -432,11 +434,10 @@ export default function App() {
               <NotionStage />
               <ReadPathStrip />
               {notionComplete ? <section className={`completion-bar ${notionComplete.state}`}><div><span>마지막 실행</span><strong>{notionComplete.message}</strong></div><button type="button" onClick={() => setNotionSelectedId(notionComplete.id)}>결과 열기</button></section> : null}
-              {notionComplete?.runId ? <ExportActions provider="notion" runId={notionComplete.runId} /> : null}
               {notionError ? <div className="page-error" role="alert">{notionError}</div> : null}
               <main className="workspace">
                 <aside className="setup-column"><ConnectionPanel status={notionStatus} expectedEmail={expectedEmail} onExpectedEmailChange={setExpectedEmail} onOAuth={async () => window.location.assign(await startOAuth(expectedEmail))} onPat={async (token) => setNotionStatus(await connectPat(expectedEmail, token))} onDisconnect={async () => { await disconnect(); setNotionStatus({ connected: false }); setNotionEvents([]); }} busy={notionRunning || statusLoading} /><TargetPanel options={notionOptions} onChange={setNotionOptions} onRun={(mode) => void runNotion(mode)} running={notionRunning} connected={notionStatus.connected} /></aside>
-                <ExtractionTimeline events={notionEvents} selectedId={notionSelected?.id} onSelect={(event) => setNotionSelectedId(event.id)} running={notionRunning} provider="notion" />
+                <ExtractionTimeline events={notionEvents} selectedId={notionSelected?.id} onSelect={(event) => setNotionSelectedId(event.id)} running={notionRunning} provider="notion" footer={<ExportActions provider="notion" runId={notionComplete?.runId} />} />
                 <DataInspector event={notionSelected} />
               </main>
             </>
@@ -444,13 +445,12 @@ export default function App() {
             <>
               <FigmaStage options={figmaOptions} status={activeFigmaStatus} />
               {figmaComplete ? <section className={`completion-bar figma-completion ${figmaComplete.state}`}><div><span>마지막 실행</span><strong>{figmaComplete.message}</strong></div><button type="button" onClick={() => setFigmaSelectedId(figmaComplete.id)}>결과 열기</button></section> : null}
-              {figmaComplete?.runId ? <ExportActions provider="figma" runId={figmaComplete.runId} /> : null}
               <FigmaAnswerCard answer={figmaAnswer} />
               <FigmaHistoryCard events={figmaEvents} />
               {figmaError ? <div className="page-error" role="alert">{figmaError}</div> : null}
               <main className="workspace figma-workspace">
-                <aside className="setup-column"><FigmaConnectionPanel statuses={figmaStatuses} transport={figmaOptions.transport} onTransportChange={changeFigmaTransport} onRefresh={refreshFigma} onOAuth={async () => window.location.assign(await startFigmaOAuth())} onDisconnect={async () => { await disconnectFigmaRemote(); await refreshFigma("remote"); setFigmaEvents([]); }} onCodexLogin={startCodexLogin} onCodexFigmaOAuth={startCodexFigmaOAuth} onCodexCancel={cancelCodexAuth} onPluginPair={startPluginPairing} onRestPat={connectFigmaRestPat} onRestDisconnect={disconnectFigmaRest} busy={figmaRunning || statusLoading} /><FigmaTargetPanel options={figmaOptions} onChange={setFigmaOptions} onRun={(mode) => void runFigma(mode)} onAsk={(question) => void askFigma(question)} running={figmaRunning} connected={activeFigmaStatus.connected} metadataConnected={figmaStatuses.plugin.restOAuth?.connected === true} /></aside>
-                <ExtractionTimeline events={figmaEvents} selectedId={figmaSelected?.id} onSelect={(event) => setFigmaSelectedId(event.id)} running={figmaRunning} provider="figma" />
+                <aside className="setup-column"><FigmaConnectionPanel statuses={figmaStatuses} transport={figmaOptions.transport} onTransportChange={changeFigmaTransport} onRefresh={refreshFigma} onOAuth={async () => window.location.assign(await startFigmaOAuth())} onDisconnect={async () => { await disconnectFigmaRemote(); await refreshFigma("remote"); setFigmaEvents([]); }} onCodexLogin={startCodexLogin} onCodexFigmaOAuth={startCodexFigmaOAuth} onCodexCancel={cancelCodexAuth} onPluginPair={startPluginPairing} onPluginDisconnect={disconnectFigmaPlugin} onRestPat={connectFigmaRestPat} onRestDisconnect={disconnectFigmaRest} busy={figmaRunning || statusLoading} /><FigmaTargetPanel options={figmaOptions} onChange={setFigmaOptions} onRun={(mode) => void runFigma(mode)} onAsk={(question) => void askFigma(question)} running={figmaRunning} connected={activeFigmaStatus.connected} metadataConnected={figmaStatuses.plugin.restOAuth?.connected === true} /></aside>
+                <ExtractionTimeline events={figmaEvents} selectedId={figmaSelected?.id} onSelect={(event) => setFigmaSelectedId(event.id)} running={figmaRunning} provider="figma" footer={<ExportActions provider="figma" runId={figmaComplete?.runId} />} />
                 <DataInspector event={figmaSelected} />
               </main>
             </>
@@ -458,14 +458,13 @@ export default function App() {
             <>
               <SlackStage mode={slackOptions.mode} />
               {slackComplete ? <section className={`completion-bar ${slackComplete.state}`}><div><span>마지막 실행</span><strong>{slackComplete.message}</strong></div><button type="button" onClick={() => setSlackSelectedId(slackComplete.id)}>결과 열기</button></section> : null}
-              {slackComplete?.runId ? <ExportActions provider="slack" runId={slackComplete.runId} /> : null}
               {slackError ? <div className="page-error" role="alert">{slackError}</div> : null}
               <main className="workspace">
                 <aside className="setup-column">
                   <SlackConnectionPanel status={slackStatus} busy={slackRunning || statusLoading} onOAuth={async () => window.location.assign(await startSlackOAuth())} onDisconnect={async () => { await disconnectSlack(); setSlackStatus({ connected: false }); setSlackEvents([]); }} onRefresh={refreshSlack} />
                   <SlackTargetPanel options={slackOptions} connected={slackStatus.connected} running={slackRunning} onChange={setSlackOptions} onUpload={uploadSlackExport} onRun={() => void runSlack()} />
                 </aside>
-                <ExtractionTimeline events={slackEvents} selectedId={slackSelected?.id} onSelect={(event) => setSlackSelectedId(event.id)} running={slackRunning} provider="slack" />
+                <ExtractionTimeline events={slackEvents} selectedId={slackSelected?.id} onSelect={(event) => setSlackSelectedId(event.id)} running={slackRunning} provider="slack" footer={<ExportActions provider="slack" runId={slackComplete?.runId} />} />
                 <DataInspector event={slackSelected} />
               </main>
             </>

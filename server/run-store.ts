@@ -3,7 +3,8 @@ import { strToU8, zipSync, type Zippable } from "fflate";
 import type { ArtifactRef, ExtractionEvent, Provider, RunRecord, StoredArtifact } from "./types.js";
 
 export const RUN_TTL_MS = 60 * 60 * 1000;
-export const MAX_RUN_ARTIFACT_BYTES = 100 * 1024 * 1024;
+// 작업 상한(2GB)과 같은 값이어야 한다. 여기가 낮으면 전송에 성공한 파트가 번들에서 조용히 빠진다.
+export const MAX_RUN_ARTIFACT_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_SESSION_RUNS = 3;
 
 /** RunRecord의 provider 무관 최소 형태. 저장소 함수는 이 범위만 건드린다. */
@@ -79,6 +80,17 @@ export function storeArtifact(
   run.artifacts.set(id, artifact);
   run.artifactBytes += input.data.byteLength;
   return { id, path, mimeType: artifact.mimeType, bytes: artifact.bytes, kind: artifact.kind };
+}
+
+/**
+ * bundleFiles에 직접 쓰면 artifactBytes가 늘지 않아 실행당 상한을 우회한다.
+ * 파트가 수천 개로 늘어난 뒤로는 이 경로가 메모리를 가장 많이 쓰므로 함께 회계한다.
+ */
+export function storeBundleFile(run: AnyRun & { bundleFiles: Map<string, Uint8Array> }, path: string, data: Uint8Array): boolean {
+  if (run.artifactBytes + data.byteLength > MAX_RUN_ARTIFACT_BYTES) return false;
+  run.bundleFiles.set(path, data);
+  run.artifactBytes += data.byteLength;
+  return true;
 }
 
 export type SerializedRun = {

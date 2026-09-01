@@ -1,9 +1,10 @@
+import { strToU8 } from "fflate";
 import { performance } from "node:perf_hooks";
 import { buildSemanticHints, loadFigmaHistory, loadFigmaRestMetadata } from "./figma-history.js";
 import { FigmaPluginBridge } from "./figma-plugin-bridge.js";
 import { runPluginCodexQuestion } from "./figma-question.js";
 import { figmaRestOAuthStatus } from "./figma-rest-client.js";
-import { storeArtifact } from "./figma-run-store.js";
+import { storeArtifact, storeBundleFile } from "./figma-run-store.js";
 import { parseFigmaTarget } from "./figma-target.js";
 import type {
   DesignContextPackage,
@@ -148,6 +149,8 @@ export async function runPluginFigmaExtraction(
     "plugin",
   );
   const artifactRefs = [] as NonNullable<ExtractionEvent["artifacts"]>;
+  let storeRejected = 0;
+  const assetIndex: Array<{ path: string; name: string; mimeType: string; bytes: number; usages: Array<{ nodeId: string; nodeName: string }> }> = [];
   const pageNodeIndex: FigmaPageNodeIndex[] = [];
   const bySlot = new Map(completed.result.artifacts.map((artifact) => [artifact.slot, artifact]));
 
@@ -157,7 +160,19 @@ export async function runPluginFigmaExtraction(
       const jsonArtifact = node.jsonSlot ? bySlot.get(node.jsonSlot) : undefined;
       const jsonUpload = node.jsonSlot ? completed.artifacts.get(node.jsonSlot) : undefined;
       const jsonPath = jsonArtifact && jsonUpload ? `nodes/${stem}.json` : undefined;
-      if (jsonPath && jsonUpload) run.bundleFiles.set(jsonPath, jsonUpload.data);
+      if (jsonPath && jsonUpload && !storeBundleFile(run, jsonPath, jsonUpload.data)) storeRejected += 1;
+      // 큰 트리는 서브트리 파트로 나뉘어 올라온다. 첫 파트는 위의 대표 경로를 그대로 쓰고
+      // 나머지는 nodes/<stem>/ 아래에 둔다. 각 파일은 단독으로 파싱되며 __part로 서로를 가리킨다.
+      const parts: NonNullable<FigmaPageNodeIndex["parts"]> = [];
+      for (const [partIndex, part] of (node.parts ?? []).entries()) {
+        const upload = completed.artifacts.get(part.slot);
+        if (!upload) continue;
+        const partPath = partIndex === 0 && jsonPath
+          ? jsonPath
+          : `nodes/${stem}/${String(partIndex + 1).padStart(3, "0")}-${safeFilePart(part.nodeName)}-${part.nodeId.replace(/:/g, "-")}.json`;
+        if (partIndex > 0 && !storeBundleFile(run, partPath, upload.data)) { storeRejected += 1; continue; }
+        parts.push({ path: partPath, nodeId: part.nodeId, name: part.nodeName, type: part.nodeType, nodeCount: part.nodeCount, parentNodeId: part.parentNodeId, bytes: part.bytes });
+      }
       const screenshotArtifact = node.screenshotSlot ? bySlot.get(node.screenshotSlot) : undefined;
       const screenshotUpload = node.screenshotSlot ? completed.artifacts.get(node.screenshotSlot) : undefined;
       const candidatePath = screenshotArtifact && screenshotUpload ? `screenshots/${stem}.png` : undefined;
@@ -185,6 +200,7 @@ export async function runPluginFigmaExtraction(
         name: node.nodeName,
         type: node.nodeType,
         jsonPath,
+        parts: parts.length > 1 ? parts : undefined,
         screenshotPath,
         screenshotOmitted,
         nodeCount: node.nodeCount,
@@ -207,15 +223,44 @@ export async function runPluginFigmaExtraction(
       stem: `plugin-${artifact.slot}-${artifact.name}`,
       path: input.scope === "current_page" && artifact.kind === "asset" ? `assets/${safeFilePart(artifact.name)}-${artifact.slot}.${extension}` : undefined,
     });
-    if (stored) artifactRefs.push(stored);
+    if (stored) {
+      artifactRefs.push(stored);
+      if (artifact.kind === "asset" && stored.path) {
+        assetIndex.push({ path: stored.path, name: artifact.name, mimeType: artifact.mimeType, bytes: artifact.bytes, usages: artifact.usages ?? [] });
+      }
+    } else storeRejected += 1;
   }
 
+  // 같은 아이콘이 76번 쓰이면 예전에는 파일 76개가 나왔다. 이제 파일은 하나이고
+  // 어디에 쓰였는지는 여기에 모인다. 중복 파일이 KB를 오염시키지 않게 한다.
+  if (assetIndex.length > 0) {
+    storeBundleFile(run, "assets/index.json", strToU8(JSON.stringify({
+      schemaVersion: 1,
+      note: "내용이 같은 에셋은 파일 하나로 합쳤습니다. usages가 그 에셋을 쓰는 노드 목록입니다.",
+      assets: assetIndex,
+    }, null, 2)));
+  }
+
+  // 에셋이 조용히 빠지면 노드 카운트 때와 같은 맹점이 생긴다. 사유를 문장으로 남긴다.
+  const lost = completed.result.omittedAssets;
+  const assetNotes: string[] = [];
+  if (lost?.cap) assetNotes.push(`개수 상한으로 ${lost.cap}개`);
+  if (lost?.oversized) assetNotes.push(`용량 상한으로 ${lost.oversized}개`);
+  if (lost?.failed) assetNotes.push(`읽기 실패로 ${lost.failed}개`);
+  // 중복 제거는 손실이 아니다. 경고 조건에서 빼고 안내 문구로만 남긴다.
+  const dedupNote = lost?.duplicate ? `내용이 같은 에셋 ${lost.duplicate}건은 파일 하나로 합치고 assets/index.json에 사용 위치를 남겼습니다.` : undefined;
+  if (storeRejected) assetNotes.push(`실행당 용량 상한으로 ${storeRejected}개`);
+
   await finishEvent(artifactStep, {
-    state: completed.result.partial || completed.result.artifacts.some((artifact) => !completed.artifacts.has(artifact.slot)) ? "warning" : "success",
-    response: { artifacts: artifactRefs, pageNodes: pageNodeIndex },
-    extracted: { artifacts: artifactRefs.length, jsonParts: pageNodeIndex.filter((node) => node.jsonPath).length, candidates: completed.result.artifacts.length },
+    state: completed.result.partial || assetNotes.length > 0 || completed.result.artifacts.some((artifact) => !completed.artifacts.has(artifact.slot)) ? "warning" : "success",
+    response: { artifacts: artifactRefs, pageNodes: pageNodeIndex, omittedAssets: completed.result.omittedAssets },
+    extracted: { artifacts: artifactRefs.length, jsonParts: pageNodeIndex.filter((node) => node.jsonPath).length, candidates: completed.result.artifacts.length, omittedAssets: lost },
     artifacts: artifactRefs,
-    message: completed.result.partial ? "page.json에 부분 추출 또는 실패한 프레임을 표시했습니다." : undefined,
+    message: [
+      completed.result.partial ? "page.json에 부분 추출 또는 실패한 프레임을 표시했습니다." : undefined,
+      assetNotes.length > 0 ? `에셋 ${assetNotes.join(", ")}를 담지 못했습니다.` : undefined,
+      dedupNote,
+    ].filter(Boolean).join(" ") || undefined,
   });
 
   if (completed.result.page) {
@@ -228,6 +273,11 @@ export async function runPluginFigmaExtraction(
       extractedAt: new Date().toISOString(),
       nodes: pageNodeIndex,
       partial: completed.result.partial || pageNodeIndex.some((node) => !node.jsonPath || node.partial || Boolean(node.error) || Boolean(node.screenshotOmitted)),
+      assets: {
+        stored: assetIndex.length,
+        deduplicated: lost?.duplicate ?? 0,
+        omitted: { cap: lost?.cap ?? 0, oversized: lost?.oversized ?? 0, failed: lost?.failed ?? 0, storeRejected },
+      },
       provenance: [
         { source: "plugin", detail: "열린 Figma 파일의 현재 페이지와 최상위 프레임 JSON·PNG·asset을 읽었습니다." },
         { source: "figma_rest", detail: "Figma REST API에서 파일 metadata, 전체 댓글, 버전 목록을 읽었습니다." },
