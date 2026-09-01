@@ -15,6 +15,7 @@
     input { width: 100%; height: 42px; padding: 0 12px; border: 1px solid var(--figma-color-border); border-radius: 9px; color: var(--figma-color-text); background: var(--figma-color-bg); font: 700 18px/1 ui-monospace, monospace; letter-spacing: .2em; text-align: center; }
     button { width: 100%; height: 36px; margin-top: 9px; border: 0; border-radius: 9px; color: white; background: #6f52d9; font: 700 12px Inter, sans-serif; cursor: pointer; }
     button:disabled { opacity: .45; cursor: default; }
+    button.ghost { height: 28px; margin-top: 8px; color: var(--figma-color-text-secondary); background: transparent; border: 1px solid var(--figma-color-border); font-weight: 600; }
     .status { display: flex; gap: 9px; align-items: flex-start; }
     .dot { width: 8px; height: 8px; margin-top: 5px; border-radius: 50%; background: #999; }
     .status.ready .dot { background: #22a06b; box-shadow: 0 0 0 4px color-mix(in srgb, #22a06b 16%, transparent); }
@@ -40,6 +41,7 @@
   <section class="card">
     <div class="status" id="status"><span class="dot"></span><div><strong id="status-title">플러그인 준비 중</strong><p id="status-copy">현재 파일 정보를 확인하고 있습니다.</p></div></div>
     <div class="meta" id="meta"></div>
+    <button id="repair" class="ghost" hidden>연결 끊고 다시 페어링</button>
   </section>
 </main>
 <script>
@@ -51,9 +53,12 @@
   const title = document.querySelector("#status-title");
   const copy = document.querySelector("#status-copy");
   const metaBox = document.querySelector("#meta");
+  const repair = document.querySelector("#repair");
   let meta;
   let token;
   let polling = false;
+  let heartbeatTimer;
+  let lastFailure = "";
 
   function setStatus(kind, heading, detail) {
     status.className = `status ${kind || ""}`;
@@ -83,6 +88,7 @@
       if (!response.ok) throw new Error(payload.message || `연결 실패 (${response.status})`);
       token = payload.sessionToken;
       pairing.hidden = true;
+      repair.hidden = false;
       document.body.classList.add("connected");
       parent.postMessage({ pluginMessage: { type: "compact-ui" } }, "*");
       setStatus("ready", "Trace Studio 연결됨", "추출 요청을 기다리고 있습니다. 플러그인을 닫지 마세요.");
@@ -93,22 +99,82 @@
     }
   });
 
+  // 세션이 끊겼는데 코드 입력칸이 숨어 있으면 플러그인을 껐다 켜는 것 말고는 방법이 없다.
+  // 만료·해제를 만나면 페어링 화면으로 되돌려 새 코드를 그 자리에서 넣게 한다.
+  function resetPairing(detail) {
+    token = undefined;
+    polling = false;
+    lastFailure = "";
+    stopHeartbeat();
+    code.value = "";
+    connect.disabled = true;
+    repair.hidden = true;
+    pairing.hidden = false;
+    document.body.classList.remove("connected");
+    parent.postMessage({ pluginMessage: { type: "expand-ui" } }, "*");
+    setStatus("error", "다시 페어링 필요", detail);
+  }
+
+  repair.addEventListener("click", () => resetPairing("Trace Studio에서 새 6자리 코드를 만들어 입력하세요."));
+
+  // 추출이 도는 동안 플러그인은 서버에 아무 요청도 보내지 않는다. 서버는 35초 무소식을 죽은 연결로
+  // 보고 세션과 진행 중인 작업까지 끊는다. 페이지 추출은 프레임 수만큼 걸려 늘 이 선을 넘었다.
+  function startHeartbeat(jobId) {
+    stopHeartbeat();
+    heartbeatTimer = setInterval(() => {
+      void fetch(`${API}/api/figma/plugin/jobs/${encodeURIComponent(jobId)}/heartbeat`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      }).catch(() => {});
+    }, 10000);
+  }
+
+  function stopHeartbeat() {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    heartbeatTimer = undefined;
+  }
+
+  /** 수십 개를 한꺼번에 던지면 브라우저가 ERR_INSUFFICIENT_RESOURCES로 전부 실패시킨다. 몇 개씩 흘려보낸다. */
+  async function pooled(items, limit, task) {
+    const results = new Array(items.length);
+    let cursor = 0;
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (cursor < items.length) {
+        const index = cursor++;
+        try { await task(items[index]); results[index] = { status: "fulfilled" }; }
+        catch (reason) { results[index] = { status: "rejected", reason }; }
+      }
+    }));
+    return results;
+  }
+
   async function poll() {
     if (polling || !token) return;
     polling = true;
     while (token) {
       try {
         const response = await fetch(`${API}/api/figma/plugin/jobs/next`, { headers: { Authorization: `Bearer ${token}` } });
-        if (response.status === 204) continue;
+        if (response.status === 401) {
+          const expired = await response.json().catch(() => ({}));
+          resetPairing(expired.message || "세션이 만료되었습니다. Trace Studio에서 새 코드를 받아 주세요.");
+          return;
+        }
+        if (response.status === 204) {
+          if (!lastFailure) setStatus("ready", "Trace Studio 연결됨", "추출 요청을 기다리고 있습니다. 플러그인을 닫지 마세요.");
+          continue;
+        }
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.message || `대기 실패 (${response.status})`);
         if (payload.job) {
-          setStatus("busy", "노드 추출 중", `${payload.job.target.nodeId}의 구조와 이미지를 읽고 있습니다.`);
+          lastFailure = "";
+          startHeartbeat(payload.job.id);
+          setStatus("busy", payload.job.type === "extract_page" ? "페이지 추출 중" : "노드 추출 중", payload.job.type === "extract_page" ? "현재 페이지의 최상위 프레임과 이미지를 읽고 있습니다." : `${payload.job.target.nodeId}의 구조와 이미지를 읽고 있습니다.`);
           parent.postMessage({ pluginMessage: { type: "job", job: payload.job } }, "*");
           return;
         }
       } catch (error) {
-        setStatus("error", "연결 재시도 중", error.message || String(error));
+        // 결과 전송이 이미 실패한 뒤라면 그 사유가 진짜 원인이다. 재연결 문구로 덮어 지우지 않는다.
+        setStatus("error", lastFailure ? "추출 실패 · 연결 재시도 중" : "연결 재시도 중", lastFailure || error.message || String(error));
         await new Promise((resolve) => setTimeout(resolve, 1500));
       }
     }
@@ -117,41 +183,66 @@
 
   async function sendResult(message) {
     try {
-      await Promise.all(message.payloads.map(async (artifact) => {
+      // 실패했을 때 "Failed to fetch" 한 줄만 남으면 어느 단계에서 끊겼는지 알 수 없다.
+      // 단계·slot·바이트를 붙여 Trace Studio 쪽 기록만으로 지점을 좁힐 수 있게 한다.
+      // 동시 요청 수를 묶으면 각 업로드가 서버의 연결·작업 타이머도 함께 되살린다.
+      const uploads = await pooled(message.payloads, 4, async (artifact) => {
+        const where = `artifact ${artifact.slot} (${artifact.data.byteLength}바이트)`;
         const response = await fetch(`${API}/api/figma/plugin/jobs/${encodeURIComponent(message.jobId)}/artifacts/${encodeURIComponent(artifact.slot)}`, {
           method: "PUT",
           headers: { Authorization: `Bearer ${token}`, "Content-Type": artifact.mimeType },
           body: artifact.data,
-        });
-        if (!response.ok) throw new Error((await response.json()).message || `artifact 업로드 실패 (${response.status})`);
-      }));
+        }).catch((cause) => { throw new Error(`${where} 업로드 실패: ${cause.message || cause}`); });
+        if (!response.ok) throw new Error(`${where}: ${(await response.json()).message || `업로드 실패 (${response.status})`}`);
+      });
+      const failed = uploads.filter((upload) => upload.status === "rejected");
+      if (failed.length) {
+        const reasons = failed.slice(0, 3).map((upload) => upload.reason?.message || String(upload.reason));
+        throw new Error(`artifact ${message.payloads.length}개 중 ${failed.length}개 업로드 실패 — ${reasons.join(" / ")}${failed.length > 3 ? " …" : ""}`);
+      }
+      const body = JSON.stringify({ result: message.result });
+      const where = `결과 전송 (본문 ${body.length}바이트, artifact ${message.payloads.length}개)`;
       const response = await fetch(`${API}/api/figma/plugin/jobs/${encodeURIComponent(message.jobId)}/result`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ result: message.result }),
-      });
-      if (!response.ok) throw new Error((await response.json()).message || `결과 전송 실패 (${response.status})`);
+        body,
+      }).catch((cause) => { throw new Error(`${where} 실패: ${cause.message || cause}`); });
+      if (!response.ok) throw new Error(`${where}: ${(await response.json()).message || `실패 (${response.status})`}`);
       setStatus("ready", "추출 완료", "Trace Studio가 결과를 받았습니다. 다음 요청을 기다립니다.");
     } catch (error) {
-      setStatus("error", "결과 전송 실패", error.message || String(error));
+      // 업로드나 결과 전송이 실패해도 서버는 아무 소식을 못 받아 90초 타임아웃까지 기다린다.
+      // 플러그인이 이미 아는 실패를 그대로 올려 Trace Studio가 즉시 끝내게 한다.
+      const detail = error.message || String(error);
+      lastFailure = detail;
+      setStatus("error", "결과 전송 실패", detail);
+      await reportFailure(message.jobId, detail);
     } finally {
+      stopHeartbeat();
       polling = false;
       void poll();
     }
   }
 
-  async function sendError(message) {
+  async function reportFailure(jobId, detail) {
     try {
-      await fetch(`${API}/api/figma/plugin/jobs/${encodeURIComponent(message.jobId)}/result`, {
+      await fetch(`${API}/api/figma/plugin/jobs/${encodeURIComponent(jobId)}/result`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ error: message.message }),
+        body: JSON.stringify({ error: detail }),
       });
-    } finally {
-      setStatus("error", "추출 실패", message.message || "Figma 노드를 읽지 못했습니다.");
-      polling = false;
-      void poll();
+    } catch {
+      // 보고조차 막혔다면 서버와의 연결 자체가 끊긴 것이다. 그때만 타임아웃에 맡긴다.
     }
+  }
+
+  async function sendError(message) {
+    const detail = message.message || "Figma 노드를 읽지 못했습니다.";
+    stopHeartbeat();
+    lastFailure = detail;
+    await reportFailure(message.jobId, detail);
+    setStatus("error", "추출 실패", detail);
+    polling = false;
+    void poll();
   }
 
   window.onmessage = (event) => {

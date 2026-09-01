@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { ExtractionEvent } from "../types";
 
 const GROUP_NAMES: Record<string, string> = {
@@ -34,10 +35,12 @@ type Props = {
   selectedId?: string;
   onSelect: (event: ExtractionEvent) => void;
   running: boolean;
-  provider?: "notion" | "figma";
+  provider?: "notion" | "figma" | "slack";
+  /** 마지막 단계 아래에 붙는 마무리 영역. 추출이 끝난 뒤 내보내기를 여기서 알아채게 한다. */
+  footer?: ReactNode;
 };
 
-export function ExtractionTimeline({ events, selectedId, onSelect, running, provider = "notion" }: Props) {
+export function ExtractionTimeline({ events, selectedId, onSelect, running, provider = "notion", footer }: Props) {
   return (
     <section className="trace" aria-labelledby="trace-title" aria-live="polite">
       <div className="trace-heading">
@@ -50,15 +53,17 @@ export function ExtractionTimeline({ events, selectedId, onSelect, running, prov
       {events.length === 0 ? (
         <div className="empty-trace">
           <span className="empty-signal" aria-hidden="true" />
-          <p>{provider === "figma" ? "Figma 연결과 노드를 정한 뒤 실행하세요." : "계정과 대상을 정한 뒤 실행하세요."}</p>
+          <p>{provider === "figma" ? "Figma 연결과 추출 범위를 정한 뒤 실행하세요." : provider === "slack" ? "Slack Export ZIP을 올리거나 MCP 대상을 정한 뒤 실행하세요." : "계정과 대상을 정한 뒤 실행하세요."}</p>
           <small>각 Tool의 입력, 원시 응답, 걸린 시간이 이 레이어를 따라 쌓입니다.</small>
         </div>
       ) : (
         <ol className="timeline">
-          {events.map((event) => (
+          {events.map((event, position) => (
             <li key={event.id} className={`timeline-item ${event.state}`}>
               <button type="button" className={`event-card ${selectedId === event.id ? "selected" : ""}`} onClick={() => onSelect(event)}>
-                <span className="event-index">{String(event.order).padStart(2, "0")}</span>
+                {/* 중단 이벤트는 맨 뒤로 정렬하려고 order에 MAX_SAFE_INTEGER를 넣는다. 그대로 찍으면
+                    9007199254740991이 단계 번호로 보인다. 화면 번호는 표시 순서로 매긴다. */}
+                <span className="event-index">{String(position + 1).padStart(2, "0")}</span>
                 <span className="event-copy">
                   <span className="event-meta"><b>{GROUP_NAMES[event.group] ?? event.group}</b>{event.tool ? <><code>{event.tool}</code>{event.origin === "codex" ? <em>Codex 중계</em> : null}</> : <em>내부 처리</em>}</span>
                   <strong>{event.label}</strong>
@@ -74,6 +79,7 @@ export function ExtractionTimeline({ events, selectedId, onSelect, running, prov
           ))}
         </ol>
       )}
+      {events.length > 0 && !running ? footer : null}
     </section>
   );
 }

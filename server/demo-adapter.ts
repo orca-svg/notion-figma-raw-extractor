@@ -14,6 +14,22 @@ function textResult(payload: unknown, isError = false): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(payload) }], isError };
 }
 
+// 데모 첨부는 외부 네트워크 없이 받아지도록 data: URL을 쓴다. 8x8 회색 PNG.
+const DEMO_IMAGE_URL =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAHUlEQVR42mNkYPhfz0AEYBxVSF+FjAwMDIzUdCMAyxsF5Kn7QYUAAAAASUVORK5CYII=";
+
+// 실제 워크스페이스 명부 대신 쓰는 합성 fixture. 실제 계정과 겹치지 않도록 .local 도메인만 쓴다.
+const DEMO_USERS = [
+  { id: "demo-user-1", name: "데모 멤버 1", email: "member-1@notion.local", type: "person", avatar_url: null },
+  { id: "demo-user-2", name: "데모 멤버 2", email: "member-2@notion.local", type: "person", avatar_url: null },
+  { id: "demo-bot-1", name: "데모 연동 봇", email: null, type: "bot", avatar_url: null },
+];
+
+const DEMO_TEAMS = [
+  { id: "demo-team-1", name: "제품팀", description: "데모 팀스페이스", member_count: 2 },
+  { id: "demo-team-2", name: "운영팀", description: "데모 팀스페이스", member_count: 1 },
+];
+
 function uuidFor(index: number): string {
   return `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`;
 }
@@ -38,6 +54,8 @@ export class DemoMcpAdapter implements McpAdapter {
       { name: "notion-search" },
       { name: "notion-query-data-sources" },
       { name: "notion-get-comments" },
+      { name: "notion-get-users" },
+      { name: "notion-get-teams" },
     ];
   }
 
@@ -56,6 +74,22 @@ export class DemoMcpAdapter implements McpAdapter {
       const archived = data?.is_archived === true;
       return textResult({
         results: archived ? [] : this.rows.map((row) => ({ object: "page", id: row._id, url: row._url, properties: row })),
+        has_more: false,
+        next_cursor: null,
+        demo: true,
+      });
+    }
+    if (name === "notion-get-users") {
+      return textResult({
+        results: DEMO_USERS,
+        has_more: false,
+        next_cursor: null,
+        demo: true,
+      });
+    }
+    if (name === "notion-get-teams") {
+      return textResult({
+        results: DEMO_TEAMS,
         has_more: false,
         next_cursor: null,
         demo: true,
@@ -80,6 +114,8 @@ export class DemoMcpAdapter implements McpAdapter {
               fetch: { status: "available" },
               query_data_sources: { status: "available" },
               get_comments: { status: "available" },
+              get_users: { status: "available" },
+              get_teams: { status: "available" },
             },
           },
         });
@@ -98,7 +134,7 @@ export class DemoMcpAdapter implements McpAdapter {
           metadata: { type: "page" },
           title: row["오류 상세 및 설명"],
           url: row._url,
-          text: `# ${row["오류 상세 및 설명"]}\n\n- 진행상태: ${row["진행상태"]}\n- 중요도: ${row["중요도"]}\n\n<page-discussions count="1"><discussion url="discussion://${row._id}/block/demo"/></page-discussions>`,
+          text: `# ${row["오류 상세 및 설명"]}\n\n- 진행상태: ${row["진행상태"]}\n- 중요도: ${row["중요도"]}\n\n<image src="${DEMO_IMAGE_URL}" alt="데모 첨부 이미지"/>\n\n<page-discussions count="1"><discussion url="discussion://${row._id}/block/demo"/></page-discussions>`,
         });
       }
       if (normalizedId.includes(DEMO_DATABASE.replace(/-/g, ""))) {

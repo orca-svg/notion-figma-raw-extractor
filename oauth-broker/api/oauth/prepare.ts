@@ -15,7 +15,7 @@ export default function handler(req: BrokerRequest, res: BrokerResponse) {
     const auth = new URL("https://www.figma.com/oauth");
     auth.searchParams.set("client_id", requiredEnv("FIGMA_REST_CLIENT_ID"));
     auth.searchParams.set("redirect_uri", redirectUri);
-    auth.searchParams.set("scope", "current_user:read file_content:read file_versions:read");
+    auth.searchParams.set("scope", "current_user:read file_content:read file_metadata:read file_comments:read file_versions:read");
     auth.searchParams.set("state", state);
     auth.searchParams.set("response_type", "code");
     auth.searchParams.set("code_challenge", sha256Base64Url(codeVerifier));

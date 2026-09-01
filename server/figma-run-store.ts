@@ -1,110 +1,41 @@
-import { randomUUID } from "node:crypto";
-import { strToU8, zipSync, type Zippable } from "fflate";
-import type { ArtifactRef, ExtractionEvent, FigmaExtractionInput, FigmaRunRecord, StoredArtifact } from "./types.js";
+import { strToU8, type Zippable } from "fflate";
+import { buildRunZip, createRun, serializeRun, type SerializedRun } from "./run-store.js";
+import type { FigmaExtractionInput, FigmaRunRecord } from "./types.js";
 
-export const RUN_TTL_MS = 60 * 60 * 1000;
-export const MAX_RUN_ARTIFACT_BYTES = 100 * 1024 * 1024;
-const MAX_SESSION_RUNS = 3;
-
-function extensionFor(mimeType: string): string {
-  const normalized = mimeType.toLowerCase().split(";")[0];
-  if (normalized === "image/jpeg") return "jpg";
-  if (normalized === "image/svg+xml") return "svg";
-  if (normalized === "application/pdf") return "pdf";
-  if (normalized.includes("/")) return normalized.split("/")[1].replace(/[^a-z0-9]+/g, "") || "bin";
-  return "bin";
-}
+export { addRunToSession, cleanupRuns, storeArtifact, storeBundleFile, upsertRunEvent, MAX_RUN_ARTIFACT_BYTES, RUN_TTL_MS } from "./run-store.js";
 
 export function createFigmaRun(sessionId: string, input: FigmaExtractionInput): FigmaRunRecord {
-  const now = Date.now();
+  return { ...createRun(sessionId, input), bundleFiles: new Map() };
+}
+
+function figmaManifestExtra(run: FigmaRunRecord): Record<string, unknown> {
   return {
-    id: randomUUID(),
-    sessionId,
-    startedAt: new Date(now).toISOString(),
-    expiresAt: now + RUN_TTL_MS,
-    input,
-    tools: [],
-    events: [],
-    artifacts: new Map(),
-    artifactBytes: 0,
+    detectedFileType: run.detectedFileType,
+    contextPackage: run.contextPackage,
+    pagePackage: run.pagePackage,
+    restMetadata: run.restMetadata,
   };
 }
 
-export function addRunToSession(runs: Map<string, FigmaRunRecord>, run: FigmaRunRecord): void {
-  cleanupRuns(runs);
-  runs.set(run.id, run);
-  const ordered = [...runs.values()].sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
-  while (ordered.length > MAX_SESSION_RUNS) {
-    const oldest = ordered.shift();
-    if (oldest) runs.delete(oldest.id);
-  }
-}
-
-export function cleanupRuns(runs: Map<string, FigmaRunRecord>): void {
-  const now = Date.now();
-  for (const [id, run] of runs) if (run.expiresAt <= now) runs.delete(id);
-}
-
-export function upsertRunEvent(run: FigmaRunRecord, event: ExtractionEvent): void {
-  const index = run.events.findIndex((candidate) => candidate.id === event.id);
-  if (index === -1) run.events.push(event);
-  else run.events[index] = event;
-  run.events.sort((a, b) => a.order - b.order);
-  if (event.type === "complete" || event.type === "fatal") run.completedAt = new Date().toISOString();
-}
-
-export function storeArtifact(
-  run: FigmaRunRecord,
-  input: { data: Uint8Array; mimeType: string; kind: ArtifactRef["kind"]; stem: string },
-): ArtifactRef | undefined {
-  if (run.artifactBytes + input.data.byteLength > MAX_RUN_ARTIFACT_BYTES) return undefined;
-  const id = randomUUID();
-  const safeStem = input.stem.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-|-$/g, "") || "artifact";
-  const folder = input.kind === "screenshot" ? "screenshots" : input.kind === "asset" ? "assets" : "binary";
-  const path = `artifacts/${folder}/${safeStem}-${id.slice(0, 8)}.${extensionFor(input.mimeType)}`;
-  const artifact: StoredArtifact = {
-    id,
-    path,
-    mimeType: input.mimeType,
-    bytes: input.data.byteLength,
-    kind: input.kind,
-    data: input.data,
-  };
-  run.artifacts.set(id, artifact);
-  run.artifactBytes += input.data.byteLength;
-  return { id, path, mimeType: artifact.mimeType, bytes: artifact.bytes, kind: artifact.kind };
-}
-
-function publicRun(run: FigmaRunRecord) {
-  return {
-    manifest: {
-      schemaVersion: 1,
-      provider: "figma",
-      runId: run.id,
-      startedAt: run.startedAt,
-      completedAt: run.completedAt,
-      expiresAt: new Date(run.expiresAt).toISOString(),
-      input: run.input,
-      detectedFileType: run.detectedFileType,
-      tools: run.tools,
-      artifactBytes: run.artifactBytes,
-      artifacts: [...run.artifacts.values()].map(({ data: _data, ...artifact }) => artifact),
-      contextPackage: run.contextPackage,
-    },
-    events: run.events,
-  };
-}
-
-export function serializeFigmaRun(run: FigmaRunRecord): ReturnType<typeof publicRun> {
-  return publicRun(run);
+export function serializeFigmaRun(run: FigmaRunRecord): SerializedRun {
+  return serializeRun(run, { provider: "figma", manifestExtra: figmaManifestExtra(run) });
 }
 
 export function buildFigmaRunZip(run: FigmaRunRecord): Uint8Array {
-  const payload = publicRun(run);
-  const files: Zippable = {
-    "manifest.json": strToU8(JSON.stringify(payload.manifest, null, 2)),
-    "trace.ndjson": strToU8(run.events.map((event) => JSON.stringify(event)).join("\n")),
-    "README.md": strToU8([
+  const extraFiles: Zippable = {};
+  if (run.contextPackage) extraFiles["context.json"] = strToU8(JSON.stringify(run.contextPackage, null, 2));
+  if (run.pagePackage) extraFiles["page.json"] = strToU8(JSON.stringify(run.pagePackage, null, 2));
+  if (run.restMetadata) {
+    extraFiles["metadata/file.json"] = strToU8(JSON.stringify(run.restMetadata.file, null, 2));
+    extraFiles["metadata/comments.json"] = strToU8(JSON.stringify(run.restMetadata.comments, null, 2));
+    extraFiles["metadata/versions.json"] = strToU8(JSON.stringify(run.restMetadata.versions, null, 2));
+  }
+  for (const [filePath, data] of run.bundleFiles) extraFiles[filePath] = data;
+  return buildRunZip(run, {
+    provider: "figma",
+    manifestExtra: figmaManifestExtra(run),
+    extraFiles,
+    readme: [
       "# MCP Trace Studio · Figma extraction",
       "",
       `- Run: ${run.id}`,
@@ -118,16 +49,27 @@ export function buildFigmaRunZip(run: FigmaRunRecord): Uint8Array {
         : run.input.transport === "plugin"
           ? `이 번들은 Figma 개발 Plugin snapshot과 artifact${run.input.question ? ", 읽기 전용 Codex 질문 답변" : ""}을 포함합니다. 버전 작성자는 coarse_version_attribution입니다.`
           : "이 번들은 AI 해석이나 코드 생성을 포함하지 않습니다. trace.ndjson과 responses의 값은 실제 MCP 호출 기록입니다.",
-    ].join("\n")),
-  };
-
-  if (run.contextPackage) files["context.json"] = strToU8(JSON.stringify(run.contextPackage, null, 2));
-
-  for (const event of run.events) {
-    if (event.state === "running" || event.response === undefined) continue;
-    const tool = (event.tool ?? "internal").replace(/[^a-zA-Z0-9_-]+/g, "-");
-    files[`responses/${String(event.order).padStart(2, "0")}-${tool}.json`] = strToU8(JSON.stringify(event.response, null, 2));
-  }
-  for (const artifact of run.artifacts.values()) files[artifact.path] = artifact.data;
-  return zipSync(files, { level: 6 });
+      ...(run.pagePackage ? [
+        "",
+        "## 파일 구성",
+        "",
+        "- `page.json` — 페이지 구조와 프레임 목록. 각 노드의 `parts`가 아래 조각을 가리킵니다.",
+        "- `nodes/<프레임>.json` — 프레임 트리의 첫 조각.",
+        "- `nodes/<프레임>/NNN-….json` — 트리가 커서 나눈 나머지 조각.",
+        "- `screenshots/` — 프레임별 PNG.",
+        "- `assets/` — 원본 이미지와 SVG. 내용이 같으면 파일 하나로 합쳤습니다.",
+        "- `assets/index.json` — 각 에셋을 쓰는 노드 목록(`usages`).",
+        "- `metadata/` — Figma가 준 작성자·댓글·버전 기록.",
+        "",
+        "## 조각을 다시 잇는 방법",
+        "",
+        "트리가 예산을 넘으면 노드 경계에서 나눕니다. 조각마다 그대로 `JSON.parse`가 되며,",
+        "떼어낸 자리에는 `{ \"id\", \"type\", \"name\", \"__part\": \"<노드 id>\" }` 스텁이 남습니다.",
+        "`__part`의 값과 같은 `document.id`를 가진 조각을 찾아 그 자리에 끼우면 원래 트리가 됩니다.",
+        "각 조각의 `partOf`가 몇 번째 조각인지, `parentNodeId`가 어느 노드에서 갈라졌는지 알려줍니다.",
+        "",
+        "`page.json`의 `partial`이 true면 무엇이 빠졌는지 각 노드의 `omittedNodes`와 `assets`에 적혀 있습니다.",
+      ] : []),
+    ],
+  });
 }

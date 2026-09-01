@@ -4,14 +4,21 @@ import type {
   FigmaPluginJob,
   FigmaPluginMeta,
   FigmaTarget,
+  FigmaFileType,
 } from "./types.js";
 
 const PAIRING_TTL_MS = 5 * 60 * 1000;
 const CONNECTION_STALE_MS = 35 * 1000;
-const JOB_TTL_MS = 90 * 1000;
+/** 총 소요 시간이 아니라 "소식이 끊긴 시간"의 한계다. 업로드·하트비트가 올 때마다 다시 잰다. */
+const JOB_IDLE_TTL_MS = 90 * 1000;
 const MAX_FAILED_PAIR_ATTEMPTS = 5;
-const MAX_ARTIFACT_BYTES = 10 * 1024 * 1024;
-const MAX_JOB_ARTIFACT_BYTES = 100 * 1024 * 1024;
+const MAX_ARTIFACT_BYTES = 48 * 1024 * 1024;
+// 플러그인 파트 예산(24MB)보다 커야 한다. 같거나 작으면 예산에 딱 맞춘 파트가 전송에서 거부된다.
+// 파트 "크기"를 키울 이유는 없다. 트리가 커지면 분할이 파트 "개수"를 늘려 감당한다.
+const MAX_JSON_PART_BYTES = 32 * 1024 * 1024;
+// NH 실제 파일은 데모(8만 노드)보다 크다. 총량에서 막히면 전량 추출이라는 목적이 무너지므로
+// 파트 개수는 사실상 열어 두고, 메모리 한계는 아래 Node 힙 설정으로 받친다.
+const MAX_JOB_ARTIFACT_BYTES = 2 * 1024 * 1024 * 1024;
 
 type Pairing = {
   code: string;
@@ -119,6 +126,14 @@ export class FigmaPluginBridge {
     };
   }
 
+  /** Trace Studio에서 끊는다. 플러그인은 다음 poll에서 401을 받아 스스로 페어링 화면으로 돌아간다. */
+  disconnect(ownerSessionId: string): boolean {
+    const connection = [...this.connections.values()].find((candidate) => candidate.ownerSessionId === ownerSessionId);
+    if (!connection) return false;
+    this.dropConnection(connection.token, "Trace Studio에서 연결을 끊었습니다.");
+    return true;
+  }
+
   authenticate(token: string | undefined): Connection {
     this.cleanup();
     if (!token) throw new Error("플러그인 세션 토큰이 없습니다.");
@@ -155,6 +170,40 @@ export class FigmaPluginBridge {
   }
 
   requestExtraction(ownerSessionId: string, target: FigmaTarget, signal?: AbortSignal): Promise<CompletedPluginJob> {
+    return this.requestJob(ownerSessionId, {
+      id: randomUUID(),
+      type: "extract_node",
+      target,
+      options: this.jobOptions(),
+    }, signal);
+  }
+
+  requestPageExtraction(ownerSessionId: string, fileKey: string, fileType: FigmaFileType, signal?: AbortSignal): Promise<CompletedPluginJob> {
+    return this.requestJob(ownerSessionId, {
+      id: randomUUID(),
+      type: "extract_page",
+      fileKey,
+      fileType,
+      options: this.jobOptions(),
+    }, signal);
+  }
+
+  private jobOptions() {
+    return {
+      // 노드 개수가 아니라 바이트가 진짜 예산이다. 개수 상한이 먼저 걸려 바이트의 26%만 쓰던 문제를
+      // 없애고, 넘치는 트리는 서브트리 파트로 나눈다.
+      // 페이지 경로는 분할이 처리하므로 개수로 자르지 않는다. 노드 단건 추출의 안전판으로만 남긴다.
+      maxNodes: 500_000,
+      maxJsonBytes: 24 * 1024 * 1024,
+      maxDimension: 2_048,
+      // 래스터 이미지는 imageHash로만 참조되므로 못 뽑으면 픽셀이 어디에도 남지 않는다.
+      // 20개에서 끊으면 조용히 사라지므로 실질 무제한으로 두고, 못 담은 것은 수치로 보고한다.
+      maxAssets: 50_000,
+      maxAssetBytes: MAX_ARTIFACT_BYTES,
+    };
+  }
+
+  private requestJob(ownerSessionId: string, job: FigmaPluginJob, signal?: AbortSignal): Promise<CompletedPluginJob> {
     this.cleanup();
     const connection = [...this.connections.values()].find((candidate) => candidate.ownerSessionId === ownerSessionId);
     if (!connection) return Promise.reject(new Error("Figma 플러그인이 연결되어 있지 않습니다."));
@@ -165,18 +214,6 @@ export class FigmaPluginBridge {
     const active = [...this.jobs.values()].find((candidate) => candidate.connectionToken === connection.token && !candidate.settled);
     if (active) return Promise.reject(new Error("이 Figma 플러그인은 이미 다른 추출을 실행 중입니다."));
 
-    const job: FigmaPluginJob = {
-      id: randomUUID(),
-      type: "extract_node",
-      target,
-      options: {
-        maxNodes: 5_000,
-        maxJsonBytes: 20 * 1024 * 1024,
-        maxDimension: 2_048,
-        maxAssets: 20,
-        maxAssetBytes: MAX_ARTIFACT_BYTES,
-      },
-    };
     return new Promise<CompletedPluginJob>((resolve, reject) => {
       const pending: PendingJob = {
         job,
@@ -187,7 +224,7 @@ export class FigmaPluginBridge {
         resolve,
         reject,
         settled: false,
-        timer: setTimeout(() => this.failJob(job.id, new Error("Figma 플러그인 추출 시간이 초과되었습니다.")), JOB_TTL_MS),
+        timer: setTimeout(() => this.failJob(job.id, new Error("Figma 플러그인 추출 시간이 초과되었습니다.")), JOB_IDLE_TTL_MS),
       };
       this.jobs.set(job.id, pending);
       if (connection.waiter) {
@@ -206,22 +243,41 @@ export class FigmaPluginBridge {
     const connection = this.authenticate(token);
     const pending = this.requireJob(connection, jobId);
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(slot)) throw new Error("artifact slot 형식이 잘못되었습니다.");
-    if (data.byteLength > MAX_ARTIFACT_BYTES) throw new Error("artifact 하나는 10MB를 넘을 수 없습니다.");
+    const limit = mimeType === "application/json" ? MAX_JSON_PART_BYTES : MAX_ARTIFACT_BYTES;
+    if (data.byteLength > limit) throw new Error(`artifact 하나는 ${Math.round(limit / 1024 / 1024)}MB를 넘을 수 없습니다.`);
     const previous = pending.artifacts.get(slot)?.data.byteLength ?? 0;
-    if (pending.artifactBytes - previous + data.byteLength > MAX_JOB_ARTIFACT_BYTES) throw new Error("실행 artifact는 총 100MB를 넘을 수 없습니다.");
+    if (pending.artifactBytes - previous + data.byteLength > MAX_JOB_ARTIFACT_BYTES) throw new Error(`실행 artifact는 총 ${Math.round(MAX_JOB_ARTIFACT_BYTES / 1024 / 1024)}MB를 넘을 수 없습니다.`);
     pending.artifacts.set(slot, { data, mimeType });
     pending.artifactBytes = pending.artifactBytes - previous + data.byteLength;
+    this.touchJob(pending);
+  }
+
+  /** 추출이 길어져도 플러그인이 살아 있다고 알려오는 동안에는 작업을 끊지 않는다. */
+  heartbeat(token: string, jobId: string): void {
+    const connection = this.authenticate(token);
+    this.touchJob(this.requireJob(connection, jobId));
+  }
+
+  private touchJob(pending: PendingJob): void {
+    if (pending.settled) return;
+    clearTimeout(pending.timer);
+    pending.timer = setTimeout(() => this.failJob(pending.job.id, new Error("Figma 플러그인 추출 시간이 초과되었습니다.")), JOB_IDLE_TTL_MS);
   }
 
   submitResult(token: string, jobId: string, result: FigmaPluginExtractionResult): void {
     const connection = this.authenticate(token);
     const pending = this.requireJob(connection, jobId);
-    if (result.meta.fileKey !== pending.job.target.fileKey) {
+    const expectedFileKey = pending.job.type === "extract_node" ? pending.job.target.fileKey : pending.job.fileKey;
+    if (result.meta.fileKey !== expectedFileKey) {
       this.failJob(jobId, new Error("열린 Figma 파일과 입력한 링크의 file key가 다릅니다."));
       return;
     }
-    if (result.meta.nodeId !== pending.job.target.nodeId) {
+    if (pending.job.type === "extract_node" && result.meta.nodeId !== pending.job.target.nodeId) {
       this.failJob(jobId, new Error("플러그인이 반환한 node ID가 요청과 다릅니다."));
+      return;
+    }
+    if (pending.job.type === "extract_page" && (!result.page || result.scope !== "current_page")) {
+      this.failJob(jobId, new Error("플러그인이 현재 페이지 결과를 반환하지 않았습니다."));
       return;
     }
     for (const artifact of result.artifacts) {

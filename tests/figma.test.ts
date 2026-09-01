@@ -12,6 +12,7 @@ import type { ExtractionEvent, FigmaExtractionInput, McpAdapter, ToolDescriptor 
 const baseInput: FigmaExtractionInput = {
   target: FIGMA_DEMO_TARGET,
   targetMode: "link",
+  scope: "node",
   transport: "desktop",
   includeVariables: true,
   includeCodeConnect: true,

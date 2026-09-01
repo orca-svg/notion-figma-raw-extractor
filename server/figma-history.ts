@@ -1,3 +1,4 @@
+import { figmaRestJson } from "./figma-rest-client.js";
 import type {
   DesignContextPackage,
   FigmaFileType,
@@ -5,9 +6,23 @@ import type {
   FigmaRestOAuthSession,
   FigmaTarget,
   FigmaVersionSnapshot,
+  FigmaRestMetadataPackage,
   SemanticHint,
 } from "./types.js";
-import { figmaRestJson } from "./figma-rest-client.js";
+
+export async function loadFigmaRestMetadata(
+  session: FigmaRestOAuthSession,
+  fileKey: string,
+  signal?: AbortSignal,
+): Promise<FigmaRestMetadataPackage> {
+  const encoded = encodeURIComponent(fileKey);
+  const [file, comments, versions] = await Promise.all([
+    figmaRestJson<unknown>(session, `/files/${encoded}/meta`, signal),
+    figmaRestJson<unknown>(session, `/files/${encoded}/comments?as_md=true`, signal),
+    figmaRestJson<unknown>(session, `/files/${encoded}/versions`, signal),
+  ]);
+  return { file, comments, versions, fetchedAt: new Date().toISOString() };
+}
 
 type VersionApiValue = {
   id: string;

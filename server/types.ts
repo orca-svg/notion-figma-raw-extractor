@@ -1,7 +1,7 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { ChildProcess } from "node:child_process";
 
-export type Provider = "notion" | "figma";
+export type Provider = "notion" | "figma" | "slack";
 export type TraceOrigin = "mcp" | "internal" | "codex" | "plugin" | "rest";
 
 export type ToolDescriptor = {
@@ -24,6 +24,8 @@ export type NotionExtractionInput = {
   includeArchived: boolean;
   includeComments: boolean;
   includeTranscript: boolean;
+  /** 대상 문서와 무관한 워크스페이스 멤버·팀스페이스 조회. 개인정보가 트레이스에 남으므로 기본 off. */
+  includeWorkspace: boolean;
   mode?: "live" | "demo";
 };
 
@@ -42,10 +44,12 @@ export type NotionTarget = {
 export type FigmaTransport = "desktop" | "remote" | "codex" | "plugin";
 export type FigmaFileType = "design" | "figjam";
 export type FigmaTargetMode = "link" | "selection";
+export type FigmaExtractionScope = "node" | "current_page";
 
 export type FigmaExtractionInput = {
   target: string;
   targetMode: FigmaTargetMode;
+  scope: FigmaExtractionScope;
   transport: FigmaTransport;
   includeVariables: boolean;
   includeCodeConnect: boolean;
@@ -181,51 +185,211 @@ export type DesignContextPackage = {
   answer?: FigmaQuestionAnswer;
 };
 
+export type FigmaRestMetadataPackage = {
+  file: unknown;
+  comments: unknown;
+  versions: unknown;
+  fetchedAt: string;
+};
+
+export type FigmaPageNodeIndex = {
+  nodeId: string;
+  name: string;
+  type: string;
+  jsonPath?: string;
+  /** 예산을 넘어 서브트리로 나뉜 조각들. 각 파일은 단독으로 파싱되며 __part 참조로 이어진다. */
+  parts?: Array<{ path: string; nodeId: string; name: string; type: string; nodeCount: number; parentNodeId?: string; bytes: number }>;
+  screenshotPath?: string;
+  /** PNG를 만들었지만 번들에 넣지 못한 경우의 사유. 채워지면 page.json은 partial로 표시된다. */
+  screenshotOmitted?: string;
+  nodeCount: number;
+  partial: boolean;
+  omittedNodes?: number;
+  error?: string;
+};
+
+export type FigmaPagePackage = {
+  schemaVersion: 1;
+  fileKey: string;
+  editorType: FigmaFileType;
+  pageId: string;
+  pageName: string;
+  extractedAt: string;
+  nodes: FigmaPageNodeIndex[];
+  partial: boolean;
+  /** 에셋 회계. 번들만 보고도 무엇이 빠졌는지 알 수 있어야 한다. */
+  assets?: { stored: number; deduplicated: number; omitted: { cap: number; oversized: number; failed: number; storeRejected: number } };
+  provenance: Array<{ source: "plugin" | "figma_rest"; detail: string }>;
+};
+
 export type StoredArtifact = ArtifactRef & {
   data: Uint8Array;
 };
 
-export type FigmaRunRecord = {
+/** Notion과 Figma 실행이 공유하는 부분. provider별 필드는 각 RunRecord가 덧붙인다. */
+export type RunRecord<TInput> = {
   id: string;
   sessionId: string;
   startedAt: string;
   completedAt?: string;
   expiresAt: number;
-  input: FigmaExtractionInput;
-  detectedFileType?: FigmaFileType;
+  input: TInput;
   tools: ToolDescriptor[];
   events: ExtractionEvent[];
   artifacts: Map<string, StoredArtifact>;
   artifactBytes: number;
-  contextPackage?: DesignContextPackage;
 };
+
+export type FigmaRunRecord = RunRecord<FigmaExtractionInput> & {
+  detectedFileType?: FigmaFileType;
+  contextPackage?: DesignContextPackage;
+  restMetadata?: FigmaRestMetadataPackage;
+  pagePackage?: FigmaPagePackage;
+  bundleFiles: Map<string, Uint8Array>;
+};
+
+export type NotionRunRecord = RunRecord<NotionExtractionInput>;
 
 export type FigmaPluginMeta = {
   pluginVersion: string;
   editorType: "figma" | "figjam";
   fileKey?: string;
   fileName?: string;
+  pageId?: string;
   pageName?: string;
   user?: { id?: string | null; name?: string; photoUrl?: string | null };
+};
+
+export type FigmaPluginJobOptions = {
+  maxNodes: number;
+  maxJsonBytes: number;
+  maxDimension: number;
+  maxAssets: number;
+  maxAssetBytes: number;
 };
 
 export type FigmaPluginJob = {
   id: string;
   type: "extract_node";
   target: FigmaTarget;
-  options: { maxNodes: number; maxJsonBytes: number; maxDimension: number; maxAssets: number; maxAssetBytes: number };
+  options: FigmaPluginJobOptions;
+} | {
+  id: string;
+  type: "extract_page";
+  fileKey: string;
+  fileType: FigmaFileType;
+  options: FigmaPluginJobOptions;
 };
 
-export type FigmaPluginExtractionResult = {
-  snapshot: unknown;
+export type FigmaPluginPageNodeResult = {
+  nodeId: string;
+  nodeName: string;
+  nodeType: string;
+  jsonSlot?: string;
+  parts?: Array<{ slot: string; nodeId: string; nodeName: string; nodeType: string; nodeCount: number; parentNodeId?: string; bytes: number }>;
+  screenshotSlot?: string;
   nodeCount: number;
   partial: boolean;
   omittedNodes?: number;
-  meta: FigmaPluginMeta & { nodeId: string; nodeName?: string; nodeType?: string };
-  artifacts: Array<{ slot: string; kind: ArtifactRef["kind"]; mimeType: string; name: string; bytes: number }>;
+  error?: string;
+};
+
+export type FigmaPluginExtractionResult = {
+  scope: FigmaExtractionScope;
+  snapshot?: unknown;
+  nodeCount: number;
+  partial: boolean;
+  omittedNodes?: number;
+  meta: FigmaPluginMeta & { nodeId?: string; nodeName?: string; nodeType?: string };
+  page?: { id: string; name: string; nodes: FigmaPluginPageNodeResult[] };
+  /** 담지 못한 에셋의 사유별 개수. 침묵하면 무엇을 잃었는지 알 길이 없다. */
+  omittedAssets?: { cap: number; oversized: number; failed: number; duplicate: number };
+  artifacts: Array<{ slot: string; kind: ArtifactRef["kind"] | "json"; mimeType: string; name: string; bytes: number; usages?: Array<{ nodeId: string; nodeName: string }> }>;
+};
+
+export type SlackImportRecord = {
+  id: string;
+  filename: string;
+  uploadedAt: string;
+  expiresAt: number;
+  data: Uint8Array;
+};
+
+export type SlackExtractionMode = "export" | "mcp";
+
+export type SlackExtractionInput = {
+  mode: SlackExtractionMode;
+  importId?: string;
+  target?: string;
+  oldest?: string;
+  latest?: string;
+  includeFiles: boolean;
+};
+
+export type SlackUser = {
+  id: string;
+  name?: string;
+  realName?: string;
+  displayName?: string;
+  email?: string;
+  deleted?: boolean;
+  raw: unknown;
+};
+
+export type SlackFileRef = {
+  id: string;
+  name?: string;
+  title?: string;
+  mimeType?: string;
+  url?: string;
+  permalink?: string;
+  conversationId?: string;
+  messageTs?: string;
+  artifactPath?: string;
+  raw: unknown;
+};
+
+export type SlackConversation = {
+  id: string;
+  name: string;
+  kind: "public_channel" | "private_channel" | "dm" | "mpim" | "unknown";
+  members: string[];
+  raw: unknown;
+};
+
+export type SlackNormalizedMessage = {
+  conversationId: string;
+  ts: string;
+  userId?: string;
+  author?: string;
+  text: string;
+  subtype?: string;
+  threadTs?: string;
+  parentTs?: string;
+  edited?: unknown;
+  reactions?: unknown;
+  files: string[];
+  raw: unknown;
+};
+
+export type SlackNormalizedExport = {
+  schemaVersion: 1;
+  source: "slack_export" | "slack_mcp";
+  importedAt: string;
+  users: SlackUser[];
+  conversations: SlackConversation[];
+  messages: SlackNormalizedMessage[];
+  files: SlackFileRef[];
+  provenance: Record<string, unknown>;
+};
+
+export type SlackRunRecord = RunRecord<SlackExtractionInput> & {
+  normalized?: SlackNormalizedExport;
 };
 
 export type FigmaRestOAuthSession = {
+  /** oauth는 broker 경유 인증, pat는 사용자가 붙여넣은 개인 액세스 토큰. */
+  kind?: "oauth" | "pat";
   redeemSecret?: string;
   accessToken?: string;
   expiresAt?: number;

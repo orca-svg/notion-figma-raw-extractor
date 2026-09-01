@@ -12,10 +12,37 @@ type Props = {
   onCodexFigmaOAuth: () => Promise<CodexAuthFlow>;
   onCodexCancel: () => Promise<void>;
   onPluginPair: () => Promise<PluginPairing>;
-  onRestOAuth: () => Promise<void>;
+  onPluginDisconnect: () => Promise<void>;
+  onRestPat: (token: string) => Promise<void>;
   onRestDisconnect: () => Promise<void>;
   busy: boolean;
 };
+
+/** 코드가 눌러서 복사된다는 사실이 보이지 않아서, 복사 아이콘과 완료 피드백을 함께 둔다. */
+function CopyableCode({ value, label, className }: { value: string; label: string; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      className={`copyable-code${className ? ` ${className}` : ""}${copied ? " copied" : ""}`}
+      onClick={() => void copy()}
+      title={label}
+      aria-label={`${label} (${value.split("").join(" ")})`}
+    >
+      <span className="copyable-code-value">{value}</span>
+      <span className="copyable-code-hint" aria-hidden="true">{copied ? "복사됨" : "복사"}</span>
+    </button>
+  );
+}
 
 function identityLabel(value: unknown): string | undefined {
   if (!value || typeof value !== "object") return undefined;
@@ -28,16 +55,18 @@ function identityLabel(value: unknown): string | undefined {
   return undefined;
 }
 
-export function FigmaConnectionPanel({ statuses, transport, onTransportChange, onRefresh, onOAuth, onDisconnect, onCodexLogin, onCodexFigmaOAuth, onCodexCancel, onPluginPair, onRestOAuth, onRestDisconnect, busy }: Props) {
-  const [error, setError] = useState<string>();
+export function FigmaConnectionPanel({ statuses, transport, onTransportChange, onRefresh, onOAuth, onDisconnect, onCodexLogin, onCodexFigmaOAuth, onCodexCancel, onPluginPair, onPluginDisconnect, onRestPat, onRestDisconnect, busy }: Props) {
+  // 실패한 동작을 그대로 들고 있어야 "다시 시도"가 같은 일을 재실행할 수 있다.
+  const [error, setError] = useState<{ message: string; retry?: () => Promise<void> }>();
   const [pairing, setPairing] = useState<PluginPairing>();
+  const [restPat, setRestPat] = useState("");
   const status = statuses[transport];
   const handle = async (action: () => Promise<void>) => {
     setError(undefined);
     try {
       await action();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError({ message: reason instanceof Error ? reason.message : String(reason), retry: action });
     }
   };
   const startCodexFlow = async (action: () => Promise<CodexAuthFlow>) => {
@@ -46,14 +75,16 @@ export function FigmaConnectionPanel({ statuses, transport, onTransportChange, o
       await action();
       await onRefresh("codex");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError({ message: reason instanceof Error ? reason.message : String(reason) });
     }
   };
-  const createPairing = async () => {
-    setError(undefined);
-    try { setPairing(await onPluginPair()); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
-  };
+  const createPairing = () => handle(async () => { setPairing(await onPluginPair()); });
+  /** 연결을 끊고 곧바로 새 코드를 띄운다. 플러그인은 다음 poll에서 페어링 화면으로 돌아간다. */
+  const repairPlugin = () => handle(async () => {
+    await onPluginDisconnect();
+    setPairing(await onPluginPair());
+    await onRefresh("plugin");
+  });
 
   return (
     <section className="panel connection-panel figma-connection" aria-labelledby="figma-connection-title">
@@ -92,7 +123,7 @@ export function FigmaConnectionPanel({ statuses, transport, onTransportChange, o
           {status.authFlow ? (
             <div className={`auth-flow ${status.authFlow.state}`} role="status">
               <div><strong>{status.authFlow.kind === "codex" ? "Codex 인증" : "Figma 인증"}</strong><span>{status.authFlow.state === "waiting" ? "대기 중" : status.authFlow.state === "complete" ? "완료" : "확인 필요"}</span></div>
-              {status.authFlow.userCode ? <button type="button" className="device-code" onClick={() => void navigator.clipboard.writeText(status.authFlow!.userCode!)} title="기기 코드 복사">{status.authFlow.userCode}</button> : null}
+              {status.authFlow.userCode ? <CopyableCode className="device-code" value={status.authFlow.userCode} label="기기 코드 복사" /> : null}
               {status.authFlow.authUrl ? <a className="auth-link" href={status.authFlow.authUrl} target="_blank" rel="noreferrer">공식 인증 화면 열기 ↗</a> : null}
               {status.authFlow.message ? <p>{status.authFlow.message}</p> : null}
             </div>
@@ -122,7 +153,7 @@ export function FigmaConnectionPanel({ statuses, transport, onTransportChange, o
               <span>01</span><p><strong>Plugin</strong><small>{status.plugin?.connected ? "페어링됨" : "6자리 코드 필요"}</small></p><i aria-hidden="true" />
             </div>
             <div className={status.restOAuth?.connected ? "ready" : "waiting"}>
-              <span>02</span><p><strong>버전 이력</strong><small>{status.restOAuth?.connected ? "REST OAuth 연결됨" : "선택 연결"}</small></p><i aria-hidden="true" />
+              <span>02</span><p><strong>파일 메타데이터</strong><small>{status.restOAuth?.connected ? "댓글·작성자·버전 연결됨" : "개인 액세스 토큰 필요"}</small></p><i aria-hidden="true" />
             </div>
           </div>
           {status.plugin?.connected ? (
@@ -130,22 +161,52 @@ export function FigmaConnectionPanel({ statuses, transport, onTransportChange, o
               <div className="connected-line"><span className="status-dot success" /><strong>Figma Plugin 준비됨</strong></div>
               <p>{status.plugin.meta?.user?.name ?? "현재 사용자"} · {status.plugin.meta?.editorType === "figjam" ? "FigJam" : "Figma Design"} · {status.plugin.meta?.pageName ?? "현재 페이지"}</p>
               {status.plugin.meta?.fileKey ? <code>{status.plugin.meta.fileKey}</code> : null}
+              <div className="inline-actions">
+                <button className="text-button" type="button" onClick={() => void repairPlugin()} disabled={busy}>연결 끊고 새 코드 발급</button>
+              </div>
             </div>
           ) : pairing ? (
             <div className="plugin-pair-code" role="status">
               <span>Figma 플러그인에 입력</span>
-              <button type="button" onClick={() => void navigator.clipboard.writeText(pairing.code)} title="페어링 코드 복사">{pairing.code}</button>
+              <CopyableCode className="pair-code" value={pairing.code} label="페어링 코드 복사" />
               <p>{new Date(pairing.expiresAt).toLocaleTimeString()}까지 유효합니다. 플러그인을 열어 둔 채 입력하세요.</p>
+              <div className="pair-code-actions">
+                <button type="button" onClick={() => void createPairing()} disabled={busy}>코드 다시 만들기</button>
+                <button type="button" onClick={() => setPairing(undefined)} disabled={busy}>닫기</button>
+              </div>
             </div>
           ) : (
             <button className="primary-button full figma-primary" type="button" onClick={() => void createPairing()} disabled={busy}>6자리 페어링 코드 만들기</button>
           )}
           <div className="plugin-rest-actions">
-            {status.restOAuth?.connected ? <button className="secondary-button full" type="button" onClick={() => void handle(async () => { await onRestDisconnect(); await onRefresh("plugin"); })} disabled={busy}>버전 이력 연결 해제</button>
-              : <button className="secondary-button full" type="button" onClick={() => void handle(onRestOAuth)} disabled={busy}>Figma 버전 이력 OAuth 연결</button>}
+            {status.restOAuth?.connected ? (
+              <button className="secondary-button full" type="button" onClick={() => void handle(async () => { await onRestDisconnect(); await onRefresh("plugin"); })} disabled={busy}>메타데이터 연결 해제</button>
+            ) : (
+              <details className="pat-box" open>
+                <summary>Figma 개인 액세스 토큰으로 연결</summary>
+                <p>Figma 계정 메뉴 → Settings → Security → Personal access tokens에서 만료와 아래 scope를 지정해 발급하세요. 토큰은 생성 직후에만 보입니다.</p>
+                <ul className="scope-list">
+                  <li><code>current_user:read</code></li>
+                  <li><code>file_content:read</code></li>
+                  <li><code>file_metadata:read</code></li>
+                  <li><code>file_comments:read</code></li>
+                  <li><code>file_versions:read</code></li>
+                </ul>
+                <label className="field compact">
+                  <span>Personal access token</span>
+                  <input type="password" value={restPat} onChange={(event) => setRestPat(event.target.value)} autoComplete="off" placeholder="figd_…" />
+                </label>
+                <button
+                  className="secondary-button full"
+                  type="button"
+                  onClick={() => void handle(async () => { await onRestPat(restPat); setRestPat(""); await onRefresh("plugin"); })}
+                  disabled={!restPat || busy}
+                >토큰 확인 후 연결</button>
+              </details>
+            )}
             <button className="text-button" type="button" onClick={() => void handle(() => onRefresh("plugin"))} disabled={busy}>연결 상태 다시 확인</button>
           </div>
-          <p className="credential-note">OAuth 브로커는 토큰 교환만 처리하며 파일·노드·이미지는 로컬에서 Figma API와 직접 주고받습니다.</p>
+          <p className="credential-note">토큰은 서버 세션 메모리에만 두며 파일이나 브라우저 저장소에 쓰지 않습니다. 파일·노드·이미지는 로컬에서 Figma API와 직접 주고받습니다.</p>
           {status.message ? <p className="connection-detail">{status.message}</p> : null}
         </div>
       ) : status.connected ? (
@@ -171,7 +232,12 @@ export function FigmaConnectionPanel({ statuses, transport, onTransportChange, o
           {status.message ? <p className="connection-detail">{status.message}</p> : null}
         </div>
       )}
-      {error ? <p className="inline-error" role="alert">{error}</p> : null}
+      {error ? (
+        <div className="inline-error" role="alert">
+          <p>{error.message}</p>
+          {error.retry ? <button className="text-button" type="button" onClick={() => void handle(error.retry!)} disabled={busy}>다시 시도</button> : null}
+        </div>
+      ) : null}
     </section>
   );
 }

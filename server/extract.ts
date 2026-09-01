@@ -1,5 +1,6 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type {
+  ArtifactRef,
   EmitEvent,
   ExtractionEvent,
   ExtractionInput,
@@ -181,6 +182,98 @@ function getUnknownBlocks(payload: unknown): string[] {
     : [];
 }
 
+const MAX_ATTACHMENT_DOWNLOADS = 12;
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+/** 서명 URL에는 만료 토큰이 붙어 있어 트레이스에는 쿼리스트링을 지우고 남긴다. */
+export function redactSignedUrl(url: string): string {
+  // data: URL은 본문 전체가 경로라 그대로 두면 트레이스가 base64로 뒤덮인다.
+  if (url.startsWith("data:")) return `${url.slice(0, url.indexOf(",") + 1) || "data:"}…`;
+  try {
+    const parsed = new URL(url);
+    return parsed.search ? `${parsed.origin}${parsed.pathname}?…` : url;
+  } catch {
+    return url.split("?")[0];
+  }
+}
+
+function attachmentStem(url: string, kind: string): string {
+  // data: URL은 본문 전체가 경로라 파일명으로 쓸 수 없다.
+  if (url.startsWith("data:")) return kind;
+  try {
+    const name = new URL(url).pathname.split("/").filter(Boolean).pop();
+    const stem = name ? decodeURIComponent(name).replace(/\.[^.]+$/, "") : "";
+    return stem ? stem.slice(0, 48) : kind;
+  } catch {
+    return kind;
+  }
+}
+
+type AttachmentDownload = { mimeType: string; bytes: number; ref?: ArtifactRef; message?: string };
+
+// 첨부 URL은 페이지 본문에서 온 값이라 서버가 아무 주소나 따라가면 안 된다.
+// 서명 URL은 https이고 인라인 이미지는 data:라, 그 둘만 허용하고 사설·loopback 대역은 막는다.
+const BLOCKED_ATTACHMENT_HOSTS = /^(localhost|127\.|0\.|10\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|\[?::1\]?$|\[?fd|\[?fe80:)/i;
+
+function assertFetchableAttachmentUrl(url: string): void {
+  if (url.startsWith("data:")) return;
+  let parsed: URL;
+  try { parsed = new URL(url); }
+  catch { throw new Error("첨부 주소를 해석하지 못했습니다."); }
+  if (parsed.protocol !== "https:") throw new Error(`https가 아닌 첨부 주소는 내려받지 않습니다. (${parsed.protocol})`);
+  if (BLOCKED_ATTACHMENT_HOSTS.test(parsed.hostname)) throw new Error("사설 또는 로컬 주소의 첨부는 내려받지 않습니다.");
+}
+
+const ATTACHMENT_TIMEOUT_MS = 30_000;
+
+async function downloadAttachment(
+  attachment: { kind: string; url: string },
+  sink: ArtifactSink,
+  signal?: AbortSignal,
+): Promise<AttachmentDownload> {
+  assertFetchableAttachmentUrl(attachment.url);
+  const timeout = AbortSignal.timeout(ATTACHMENT_TIMEOUT_MS);
+  const response = await fetch(attachment.url, {
+    redirect: "follow",
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+  });
+  if (!response.ok) throw new Error(`첨부를 받지 못했습니다. HTTP ${response.status}`);
+  const mimeType = (response.headers.get("content-type") ?? "application/octet-stream").split(";")[0].trim();
+  // 전부 버퍼링한 뒤 크기를 재면 상한이 무의미하다. 읽으면서 넘는 순간 끊는다.
+  const reader = response.body?.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  let overflow = false;
+  if (reader) {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > MAX_ATTACHMENT_BYTES) { overflow = true; await reader.cancel(); break; }
+      chunks.push(value);
+    }
+  }
+  if (overflow) {
+    return { mimeType, bytes, message: "첨부가 25MB를 넘어 보관하지 않았습니다." };
+  }
+  const buffer = new Uint8Array(bytes);
+  let offset = 0;
+  for (const chunk of chunks) { buffer.set(chunk, offset); offset += chunk.byteLength; }
+  const ref = sink({ data: buffer, mimeType, kind: "asset", stem: attachmentStem(attachment.url, attachment.kind) });
+  return { mimeType, bytes: buffer.byteLength, ref, message: ref ? undefined : "실행 artifact 용량 상한에 걸려 보관하지 않았습니다." };
+}
+
+/** 워크스페이스 조회 응답의 형태가 연결마다 달라서, 흔한 배열 키를 훑어 개수만 세어 둔다. */
+function countCollection(payload: unknown): number | undefined {
+  if (Array.isArray(payload)) return payload.length;
+  const record = asRecord(payload);
+  if (!record) return undefined;
+  for (const key of ["results", "users", "members", "teams", "teamspaces", "items"]) {
+    if (Array.isArray(record[key])) return (record[key] as unknown[]).length;
+  }
+  return undefined;
+}
+
 function readableError(parsed: ParsedToolResult): string {
   const record = asRecord(parsed.payload);
   if (typeof record?.message === "string") return record.message;
@@ -193,12 +286,20 @@ type StepRunner = <T>(definition: {
   label: string;
   tool?: string;
   request?: unknown;
-}, action: () => Promise<T>, summarize?: (value: T) => unknown, state?: (value: T) => StepState) => Promise<T | undefined>;
+}, action: () => Promise<T>, summarize?: (value: T) => unknown, state?: (value: T) => StepState, artifactsFor?: (value: T) => ArtifactRef[] | undefined) => Promise<T | undefined>;
 
-export async function runExtraction(adapter: McpAdapter, input: ExtractionInput, emit: EmitEvent): Promise<void> {
+/** index.ts가 실행 기록에 첨부 원본을 보관할 수 있도록 넘겨주는 저장 통로. 없으면 다운로드 단계를 건너뛴다. */
+export type ArtifactSink = (input: {
+  data: Uint8Array;
+  mimeType: string;
+  kind: ArtifactRef["kind"];
+  stem: string;
+}) => ArtifactRef | undefined;
+
+export async function runExtraction(adapter: McpAdapter, input: ExtractionInput, emit: EmitEvent, sink?: ArtifactSink, signal?: AbortSignal): Promise<void> {
   let order = 0;
   const finalEvents = new Map<string, ExtractionEvent>();
-  const runStep: StepRunner = async (definition, action, summarize, stateFor) => {
+  const runStep: StepRunner = async (definition, action, summarize, stateFor, artifactsFor) => {
     const id = `${String(++order).padStart(2, "0")}-${definition.group}`;
     const started = performance.now();
     const base: ExtractionEvent = {
@@ -222,6 +323,7 @@ export async function runExtraction(adapter: McpAdapter, input: ExtractionInput,
         elapsedMs: Math.round(performance.now() - started),
         response: value,
         extracted: summarize?.(value),
+        artifacts: artifactsFor?.(value),
       };
       finalEvents.set(id, event);
       await emit(event);
@@ -251,6 +353,8 @@ export async function runExtraction(adapter: McpAdapter, input: ExtractionInput,
   const queryTool = resolveTool(tools, "query_data_sources");
   const legacyViewTool = resolveTool(tools, "query_database_view");
   const commentsTool = resolveTool(tools, "get_comments");
+  const usersTool = resolveTool(tools, "get_users");
+  const teamsTool = resolveTool(tools, "get_teams");
   if (!fetchTool) throw new Error("이 MCP 연결에는 fetch 도구가 없습니다.");
 
   const identityResult = await runStep(
@@ -277,6 +381,39 @@ export async function runExtraction(adapter: McpAdapter, input: ExtractionInput,
       message: "입력한 이메일과 실제 Notion 연결 계정이 다릅니다. 데이터 조회를 중단했습니다.",
     });
     return;
+  }
+
+  // 대상 문서와 무관한 워크스페이스 스코프 조회라 target 단계보다 앞에 둔다.
+  const workspaceSummary: { members?: number; teams?: number } = {};
+  const skipWorkspace = async (label: string, message: string) => {
+    const id = `${String(++order).padStart(2, "0")}-workspace`;
+    await emit({ type: "step", id, order, group: "workspace", label, state: "skipped", startedAt: new Date().toISOString(), message });
+  };
+  if (!input.includeWorkspace) {
+    await skipWorkspace("워크스페이스 멤버·팀스페이스 확인", "워크스페이스 옵션이 꺼져 있어 호출하지 않았습니다.");
+  } else {
+    if (usersTool) {
+      const usersResult = await runStep(
+        { group: "workspace", label: "워크스페이스 사용자 조회", tool: usersTool, request: {} },
+        async () => parseToolResult(await adapter.callTool(usersTool, {})),
+        (value) => ({ count: countCollection(value.payload), payload: value.payload }),
+        (value) => (value.isError ? "error" : "success"),
+      );
+      if (usersResult && !usersResult.isError) workspaceSummary.members = countCollection(usersResult.payload);
+    } else {
+      await skipWorkspace("워크스페이스 사용자 조회", "이 연결에는 get_users 도구가 없습니다.");
+    }
+    if (teamsTool) {
+      const teamsResult = await runStep(
+        { group: "workspace", label: "팀스페이스 조회", tool: teamsTool, request: {} },
+        async () => parseToolResult(await adapter.callTool(teamsTool, {})),
+        (value) => ({ count: countCollection(value.payload), payload: value.payload }),
+        (value) => (value.isError ? "error" : "success"),
+      );
+      if (teamsResult && !teamsResult.isError) workspaceSummary.teams = countCollection(teamsResult.payload);
+    } else {
+      await skipWorkspace("팀스페이스 조회", "이 연결에는 get_teams 도구가 없습니다.");
+    }
   }
 
   let searchResult: ParsedToolResult | undefined;
@@ -457,6 +594,51 @@ export async function runExtraction(adapter: McpAdapter, input: ExtractionInput,
     }
   }
 
+  // 첨부는 만료되는 서명 URL이라 여기서 즉시 받아 실행 기록에 보관한다.
+  // download_attachment는 MCP로 올린 200KiB 이하 텍스트 첨부 전용이라 페이지 이미지에는 쓸 수 없다.
+  const uniqueAttachments = allAttachments.filter(
+    (item, index) => allAttachments.findIndex((other) => other.url === item.url) === index,
+  );
+  const storedAttachments: ArtifactRef[] = [];
+  if (uniqueAttachments.length && sink) {
+    for (const [index, attachment] of uniqueAttachments.slice(0, MAX_ATTACHMENT_DOWNLOADS).entries()) {
+      const label = `첨부 ${index + 1} 원본 내려받기`;
+      const stored = await runStep(
+        { group: "attachment", label, request: { url: redactSignedUrl(attachment.url), kind: attachment.kind } },
+        async () => downloadAttachment(attachment, sink, signal),
+        (value) => ({ kind: attachment.kind, mimeType: value.mimeType, bytes: value.bytes, stored: Boolean(value.ref) }),
+        (value) => (value.ref ? "success" : "warning"),
+        (value) => (value.ref ? [value.ref] : undefined),
+      );
+      if (stored?.ref) storedAttachments.push(stored.ref);
+    }
+    if (uniqueAttachments.length > MAX_ATTACHMENT_DOWNLOADS) {
+      const id = `${String(++order).padStart(2, "0")}-attachment`;
+      await emit({
+        type: "step",
+        id,
+        order,
+        group: "attachment",
+        label: "나머지 첨부 생략",
+        state: "skipped",
+        startedAt: new Date().toISOString(),
+        message: `첨부 ${uniqueAttachments.length}개 중 ${MAX_ATTACHMENT_DOWNLOADS}개만 내려받았습니다.`,
+      });
+    }
+  } else if (uniqueAttachments.length) {
+    const id = `${String(++order).padStart(2, "0")}-attachment`;
+    await emit({
+      type: "step",
+      id,
+      order,
+      group: "attachment",
+      label: "첨부 원본 내려받기",
+      state: "skipped",
+      startedAt: new Date().toISOString(),
+      message: "이 실행에는 artifact 저장소가 없어 URL만 기록했습니다.",
+    });
+  }
+
   const finished = [...finalEvents.values()];
   await emit({
     type: "complete",
@@ -468,6 +650,9 @@ export async function runExtraction(adapter: McpAdapter, input: ExtractionInput,
     startedAt: new Date().toISOString(),
     extracted: {
       toolCount: tools.length,
+      workspaceMembers: workspaceSummary.members,
+      workspaceTeams: workspaceSummary.teams,
+      storedAttachments: storedAttachments.length,
       dataSources,
       views: viewUrls,
       queryResponses: allQueryPayloads.length,

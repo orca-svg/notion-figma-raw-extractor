@@ -41,8 +41,8 @@ export function createState(): string {
   return randomBytes(32).toString("hex");
 }
 
-export async function discoverOAuthMetadata(): Promise<OAuthMetadata> {
-  const resourceUrl = new URL("/.well-known/oauth-protected-resource", MCP_ENDPOINT);
+export async function discoverOAuthMetadata(mcpEndpoint = MCP_ENDPOINT): Promise<OAuthMetadata> {
+  const resourceUrl = new URL("/.well-known/oauth-protected-resource", mcpEndpoint);
   const resourceResponse = await fetch(resourceUrl);
   if (!resourceResponse.ok) {
     throw new Error(`OAuth 보호 리소스 확인 실패 (${resourceResponse.status})`);
@@ -64,7 +64,7 @@ export async function discoverOAuthMetadata(): Promise<OAuthMetadata> {
   return metadata;
 }
 
-export async function registerClient(metadata: OAuthMetadata, redirectUri: string, clientUri = "http://127.0.0.1:5173"): Promise<ClientCredentials> {
+export async function registerClient(metadata: OAuthMetadata, redirectUri: string, clientUri = "http://127.0.0.1:5173", clientName = "Notion MCP Trace Lab"): Promise<ClientCredentials> {
   if (!metadata.registration_endpoint) {
     throw new Error("Notion OAuth 서버가 동적 클라이언트 등록 주소를 제공하지 않았습니다.");
   }
@@ -72,7 +72,7 @@ export async function registerClient(metadata: OAuthMetadata, redirectUri: strin
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({
-      client_name: "Notion MCP Trace Lab",
+      client_name: clientName,
       client_uri: clientUri,
       redirect_uris: [redirectUri],
       grant_types: ["authorization_code", "refresh_token"],
@@ -92,6 +92,7 @@ export function buildAuthorizationUrl(input: {
   redirectUri: string;
   challenge: string;
   state: string;
+  scope?: string;
 }): string {
   const params = new URLSearchParams({
     response_type: "code",
@@ -102,6 +103,7 @@ export function buildAuthorizationUrl(input: {
     code_challenge_method: "S256",
     prompt: "consent",
   });
+  if (input.scope) params.set("scope", input.scope);
   return `${input.metadata.authorization_endpoint}?${params.toString()}`;
 }
 
