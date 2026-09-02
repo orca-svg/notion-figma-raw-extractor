@@ -11,14 +11,14 @@ Figma Desktop과 Trace Studio는 같은 Mac 또는 Windows PC에서 실행합니
 
 ## 최초 한 번 · Windows
 
-1. PowerShell에서 이 폴더의 `setup.ps1`을 실행합니다.
-2. 실행 정책으로 막히면 사내 정책에 따라 서명/허용 여부를 관리자에게 확인합니다.
+1. `setup.bat`을 더블클릭합니다.
+2. `Windows의 PC 보호` 안내가 뜨면 `추가 정보` → `실행`을 선택합니다.
 3. Figma Desktop에서 `Plugins → Development → Import plugin from manifest…`를 엽니다.
-4. 표시된 `plugins\figma-trace\manifest.json`을 가져옵니다.
+4. 탐색기에서 선택된 `plugins\figma-trace\manifest.json`을 가져옵니다. 경로도 클립보드에 복사됩니다.
 
 ## 사용할 때마다
 
-1. macOS는 `start.command`, Windows는 PowerShell의 `start.ps1`을 실행합니다.
+1. macOS는 `start.command`, Windows는 `start.bat`을 더블클릭합니다.
 2. 자동으로 열린 Trace Studio에서 `Figma → Plugin`을 선택하고 6자리 코드를 만듭니다.
 3. Figma 파일에서 `MCP Trace Studio Bridge`를 실행하고 코드를 입력합니다.
 4. 노드 추출은 프레임이나 레이어를 선택한 뒤 `Command L`로 링크를 복사해 붙여넣습니다. 페이지 추출은 Figma에서 대상 페이지를 열고 Trace Studio의 `현재 페이지 추출`을 선택합니다.
@@ -42,9 +42,9 @@ curl http://127.0.0.1:8787/api/health
 
 Windows에서는 다음으로 확인합니다.
 
-```powershell
-.\setup.ps1 -Check
-.\start.ps1 -Check
+```bat
+setup.bat --check
+start.bat --check
 ```
 
 `dist/code.js` 오류가 보이면 `setup.command`를 다시 실행한 뒤 Figma에서 개발 플러그인을 제거하고 manifest를 다시 가져옵니다.

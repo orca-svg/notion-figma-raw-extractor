@@ -12,10 +12,10 @@ export const PILOT_ROOT_FILES = [
   "notion_sample_rows_26.csv",
   "package-lock.json",
   "package.json",
+  "setup.bat",
   "setup.command",
-  "setup.ps1",
+  "start.bat",
   "start.command",
-  "start.ps1",
   "tsconfig.app.json",
   "tsconfig.json",
   "tsconfig.node.json",
@@ -25,7 +25,7 @@ export const PILOT_ROOT_FILES = [
 
 export const PILOT_DIRECTORIES = ["oauth-broker", "plugins", "public", "scripts", "server", "src", "tests"] as const;
 
-const TEXT_EXTENSIONS = new Set([".command", ".css", ".csv", ".html", ".js", ".json", ".md", ".mjs", ".ps1", ".svg", ".toml", ".ts", ".tsx", ".txt", ".yml", ".yaml"]);
+const TEXT_EXTENSIONS = new Set([".bat", ".command", ".css", ".csv", ".html", ".js", ".json", ".md", ".mjs", ".svg", ".toml", ".ts", ".tsx", ".txt", ".yml", ".yaml"]);
 const CREDENTIAL_PATTERN = /(?:gh[opsu]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|figd_[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|Bearer\s+[A-Za-z0-9._-]{24,})/;
 
 export function isBlockedPilotPath(relativePath: string): boolean {
