@@ -41,7 +41,7 @@ npm run package:pilot
 
 결과는 `release/mcp-trace-studio-pilot-v<version>.zip`에 생성됩니다. 패키징은 허용 목록에 있는 파일만 포함하며 `.env`, credential 형태의 문자열, 개인 절대 경로, `node_modules`, 로그를 발견하면 중단합니다.
 
-ZIP 사용자는 [내부 파일럿 시작 안내](PILOT-START.md)에 따라 macOS에서는 `setup.command`, Windows에서는 `setup.ps1`을 실행하고 Figma manifest를 등록합니다. 이후에는 각각 `start.command` 또는 `start.ps1`로 로컬 앱을 시작합니다.
+ZIP 사용자는 [내부 파일럿 시작 안내](PILOT-START.md)에 따라 macOS에서는 `setup.command`, Windows에서는 `setup.bat`을 실행하고 Figma manifest를 등록합니다. 이후에는 각각 `start.command` 또는 `start.bat`으로 로컬 앱을 시작합니다.
 
 실행 주소:
 
@@ -239,7 +239,7 @@ NH Workspace/Org Owner에게 `All channels and conversations` 범위의 원본 J
 
 공식 `https://mcp.slack.com/mcp`에 PKCE OAuth로 연결합니다. 요청 scope는 채널·그룹·DM history/read, `files:read`, `users:read`이며 인증 사용자가 볼 수 있는 대화만 읽습니다. 채널 ID 또는 Slack 대화 URL을 입력하면 history와 thread replies를 정규화합니다. 조직 전체 DM을 읽는 경로가 아니며 전체 DM은 관리자 Export를 사용합니다.
 
-Figma 실행 기록은 서버 메모리에 1시간 동안, 세션당 최근 3개를 보관합니다. JSON 파트는 하나당 24MB(수신 32MB), 에셋은 하나당 48MB, 실행당 총 2GB까지 저장합니다. 큰 파일에서 ZIP을 조립하려면 Node 힙이 필요하므로 `start.command`와 `start.ps1`이 `--max-old-space-size=8192`를 설정합니다. 모두 메모리에 두므로 실질 안전선은 1~1.5GB이고, 그 이상은 디스크로 흘려쓰는 구조가 필요합니다. 서버 재시작 시 인증 정보와 실행 기록은 사라지며 사용자가 ZIP을 선택했을 때만 영구 파일을 만듭니다.
+Figma 실행 기록은 서버 메모리에 1시간 동안, 세션당 최근 3개를 보관합니다. JSON 파트는 하나당 24MB(수신 32MB), 에셋은 하나당 48MB, 실행당 총 2GB까지 저장합니다. 큰 파일에서 ZIP을 조립하려면 Node 힙이 필요하므로 `start.command`와 `start.bat`이 `--max-old-space-size=8192`를 설정합니다. 모두 메모리에 두므로 실질 안전선은 1~1.5GB이고, 그 이상은 디스크로 흘려쓰는 구조가 필요합니다. 서버 재시작 시 인증 정보와 실행 기록은 사라지며 사용자가 ZIP을 선택했을 때만 영구 파일을 만듭니다.
 
 ## API
 

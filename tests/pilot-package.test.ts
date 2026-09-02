@@ -6,8 +6,8 @@ describe("internal pilot distribution", () => {
   it("double-click setup and start commands are part of the release allowlist", () => {
     expect(PILOT_ROOT_FILES).toContain("setup.command");
     expect(PILOT_ROOT_FILES).toContain("start.command");
-    expect(PILOT_ROOT_FILES).toContain("setup.ps1");
-    expect(PILOT_ROOT_FILES).toContain("start.ps1");
+    expect(PILOT_ROOT_FILES).toContain("setup.bat");
+    expect(PILOT_ROOT_FILES).toContain("start.bat");
     expect(PILOT_ROOT_FILES).toContain("PILOT-START.md");
   });
 
