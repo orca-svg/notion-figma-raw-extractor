@@ -22,6 +22,9 @@ import {
   getSlackStatus,
   startSlackOAuth,
   streamSlackExtraction,
+  streamSlackWebExtraction,
+  connectSlackToken,
+  disconnectSlackToken,
   streamSlackImport,
   uploadSlackExport,
 } from "./api";
@@ -86,7 +89,7 @@ const INITIAL_FIGMA_OPTIONS: FigmaExtractionOptions = {
   mode: "live",
 };
 const FIGMA_SESSION_KEY = "mcp-trace-studio:figma-options";
-const INITIAL_SLACK_OPTIONS: SlackExtractionOptions = { mode: "export", includeFiles: false, target: "", oldest: "", latest: "" };
+const INITIAL_SLACK_OPTIONS: SlackExtractionOptions = { mode: "web", includeFiles: false, target: "", oldest: "", latest: "" };
 
 function initialFigmaOptions(): FigmaExtractionOptions {
   try {
@@ -369,10 +372,15 @@ export default function App() {
             setSlackEvents((current) => upsertEvent(current, event));
             setSlackSelectedId((current) => current ?? event.id);
           }, controller.signal)
-        : streamSlackExtraction(slackOptions, (event) => {
-            setSlackEvents((current) => upsertEvent(current, event));
-            setSlackSelectedId((current) => current ?? event.id);
-          }, controller.signal);
+        : slackOptions.mode === "web"
+          ? streamSlackWebExtraction(slackOptions, (event) => {
+              setSlackEvents((current) => upsertEvent(current, event));
+              setSlackSelectedId((current) => current ?? event.id);
+            }, controller.signal)
+          : streamSlackExtraction(slackOptions, (event) => {
+              setSlackEvents((current) => upsertEvent(current, event));
+              setSlackSelectedId((current) => current ?? event.id);
+            }, controller.signal);
       await stream;
       if (slackOptions.mode === "export") setSlackOptions((current) => ({ ...current, importId: undefined }));
     } catch (error) {
@@ -394,11 +402,18 @@ export default function App() {
   };
 
   const activeFigmaStatus = figmaStatuses[figmaOptions.transport];
-  const activeConnected = route.provider === "notion" ? notionStatus.connected : route.provider === "slack" ? slackOptions.mode === "export" || slackStatus.connected : activeFigmaStatus.connected;
+  const slackReady = slackOptions.mode === "export"
+    ? true
+    : slackOptions.mode === "web" ? slackStatus.web?.connected === true : slackStatus.connected;
+  const activeConnected = route.provider === "notion" ? notionStatus.connected : route.provider === "slack" ? slackReady : activeFigmaStatus.connected;
   const connectionCopy = statusLoading
     ? "연결 확인 중"
     : route.provider === "slack"
-      ? slackOptions.mode === "export" ? "로컬 ZIP 모드" : slackStatus.connected ? "Slack MCP 연결됨" : "Slack 연결 안 됨"
+      ? slackOptions.mode === "export"
+        ? "로컬 ZIP 모드"
+        : slackOptions.mode === "web"
+          ? slackStatus.web?.connected ? `Slack 토큰 연결됨 (${slackStatus.web.teamName ?? slackStatus.web.teamId ?? "워크스페이스"})` : "Slack 토큰 연결 안 됨"
+          : slackStatus.connected ? "Slack MCP 연결됨" : "Slack 연결 안 됨"
       : activeConnected
         ? route.provider === "notion" ? `${notionStatus.identity?.workspace?.name ?? "Notion"} 연결됨` : `${figmaOptions.transport === "desktop" ? "Desktop" : figmaOptions.transport === "remote" ? "Remote" : figmaOptions.transport === "plugin" ? "Plugin" : "Codex"} 준비됨`
         : "연결 안 됨";
@@ -461,8 +476,24 @@ export default function App() {
               {slackError ? <div className="page-error" role="alert">{slackError}</div> : null}
               <main className="workspace">
                 <aside className="setup-column">
-                  <SlackConnectionPanel status={slackStatus} busy={slackRunning || statusLoading} onOAuth={async () => window.location.assign(await startSlackOAuth())} onDisconnect={async () => { await disconnectSlack(); setSlackStatus({ connected: false }); setSlackEvents([]); }} onRefresh={refreshSlack} />
-                  <SlackTargetPanel options={slackOptions} connected={slackStatus.connected} running={slackRunning} onChange={setSlackOptions} onUpload={uploadSlackExport} onRun={() => void runSlack()} />
+                  <SlackConnectionPanel
+                    status={slackStatus}
+                    busy={slackRunning || statusLoading}
+                    onOAuth={async () => window.location.assign(await startSlackOAuth())}
+                    onDisconnect={async () => { await disconnectSlack(); setSlackStatus({ connected: false }); setSlackEvents([]); }}
+                    onRefresh={refreshSlack}
+                    onConnectToken={async (token) => {
+                      const web = await connectSlackToken(token);
+                      setSlackStatus((current) => ({ ...current, web }));
+                      // 토큰을 붙였다면 그 경로로 뽑겠다는 뜻이다.
+                      setSlackOptions((current) => (current.mode === "export" ? current : { ...current, mode: "web" }));
+                    }}
+                    onDisconnectToken={async () => {
+                      await disconnectSlackToken();
+                      setSlackStatus((current) => ({ ...current, web: { connected: false } }));
+                    }}
+                  />
+                  <SlackTargetPanel options={slackOptions} connected={slackReady} running={slackRunning} onChange={setSlackOptions} onUpload={uploadSlackExport} onRun={() => void runSlack()} />
                 </aside>
                 <ExtractionTimeline events={slackEvents} selectedId={slackSelected?.id} onSelect={(event) => setSlackSelectedId(event.id)} running={slackRunning} provider="slack" footer={<ExportActions provider="slack" runId={slackComplete?.runId} />} />
                 <DataInspector event={slackSelected} />

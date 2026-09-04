@@ -92,7 +92,8 @@ function string(value: unknown): string | undefined {
   return typeof value === "string" && value ? value : undefined;
 }
 
-function normalizeUsers(values: unknown[]): SlackUser[] {
+/** MCP 경로도 같은 모양으로 사용자를 정규화한다. */
+export function normalizeUsers(values: unknown[]): SlackUser[] {
   return values.map((value) => {
     const item = record(value);
     const profile = record(item.profile);
