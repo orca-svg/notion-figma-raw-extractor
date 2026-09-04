@@ -10,6 +10,7 @@ import type {
   FigmaTransport,
   Provider,
   SlackConnectionStatus,
+  SlackWebStatus,
   SlackExtractionOptions,
   SlackImportResult,
 } from "./types";
@@ -212,6 +213,24 @@ export function streamSlackImport(importId: string, onEvent: (event: ExtractionE
 
 export function streamSlackExtraction(options: SlackExtractionOptions, onEvent: (event: ExtractionEvent) => void, signal?: AbortSignal): Promise<void> {
   return streamNdjson("/api/slack/extract/stream", options, onEvent, signal);
+}
+
+export async function connectSlackToken(token: string): Promise<SlackWebStatus> {
+  const response = await mutate("/api/slack/auth/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  return readJson<SlackWebStatus>(response);
+}
+
+export async function disconnectSlackToken(): Promise<void> {
+  const response = await mutate("/api/slack/auth/token/disconnect", { method: "POST" });
+  if (!response.ok) throw new Error("Slack 토큰 연결 해제에 실패했습니다.");
+}
+
+export function streamSlackWebExtraction(options: SlackExtractionOptions, onEvent: (event: ExtractionEvent) => void, signal?: AbortSignal): Promise<void> {
+  return streamNdjson("/api/slack/web/extract/stream", options, onEvent, signal);
 }
 
 export async function getRun(provider: Provider, runId: string): Promise<FigmaRunPayload> {

@@ -182,12 +182,17 @@ button:disabled { cursor: not-allowed; opacity: .46; }
 .demo-note { margin: 8px 0 0; }
 .connection-instructions ol { margin: 0 0 13px; padding-left: 19px; color: #565d6b; font-size: 11px; line-height: 1.8; }
 .connection-detail { max-height: 80px; overflow: auto; overflow-wrap: anywhere; }
-.segmented-control { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; padding: 3px; border-radius: 12px; background: #e8e9ee; }
+.segmented-control { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 3px; padding: 3px; border-radius: 12px; background: #e8e9ee; }
 /* grid 항목은 기본 min-width가 auto라 글자 폭 밑으로 못 줄어든다. 0으로 풀어야 컨트롤이 넘치지 않는다. */
-.segmented-control button { min-width: 0; min-height: 34px; border: 0; border-radius: 9px; color: var(--muted); background: transparent; cursor: pointer; font-size: 11px; font-weight: 760; transition: transform .1s ease, background-color .15s ease, color .15s ease; }
+.segmented-control button { min-width: 0; min-height: 34px; white-space: nowrap; border: 0; border-radius: 9px; color: var(--muted); background: transparent; cursor: pointer; font-size: 11px; font-weight: 760; transition: transform .1s ease, background-color .15s ease, color .15s ease; }
 .segmented-control button.active { color: var(--graphite); background: white; box-shadow: 0 2px 7px rgba(31,35,48,.08); }
 .figma-connection > .segmented-control { grid-template-columns: repeat(4, 1fr); margin-bottom: 13px; }
+.segmented-control button:disabled { opacity: .4; cursor: not-allowed; }
 .segmented-control.compact { width: 172px; }
+.slack-target { display: flex; flex-direction: column; gap: 14px; }
+/* .run-blocker-note 처럼 뒤에서 선언되는 규칙을 이기려면 특정도를 한 단계 올려야 한다. */
+.panel.slack-target > * { margin: 0; }
+.panel.slack-target > .panel-heading { margin-bottom: 3px; }
 .codex-connection-body { display: grid; gap: 12px; }
 .bridge-disclosure { padding: 12px 13px; border: 1px solid #cfc9ec; border-left: 3px solid var(--figma); border-radius: 11px; background: #f3f1fb; }
 .bridge-disclosure span { color: #4d3aa4; font: 760 8px/1 var(--mono); letter-spacing: 0; }

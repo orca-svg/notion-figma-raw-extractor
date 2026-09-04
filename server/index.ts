@@ -56,6 +56,8 @@ import { inspectSlackExportZip } from "./slack-export.js";
 import { runSlackExportExtraction } from "./slack-extract.js";
 import { connectToSlackMcp, SLACK_MCP_ENDPOINT } from "./slack-mcp-client.js";
 import { runSlackMcpExtraction } from "./slack-mcp-extract.js";
+import { clearSlackWeb, connectSlackWebToken, slackWebStatus, SlackWebApiError } from "./slack-web-client.js";
+import { runSlackWebExtraction } from "./slack-web-extract.js";
 import {
   addRunToSession as addSlackRunToSession,
   buildSlackRunZip,
@@ -87,6 +89,7 @@ import type {
   NotionRunRecord,
   CodexBridgeSession,
   SlackImportRecord,
+  SlackWebSession,
   SlackExtractionInput,
   SlackRunRecord,
 } from "./types.js";
@@ -123,6 +126,8 @@ type SlackSession = {
   };
   tokens?: TokenResponse & { expiresAt?: number };
   refreshPromise?: Promise<string>;
+  /** Web API 직접 호출용 토큰. MCP OAuth와 독립적으로 붙였다 뗄 수 있다. */
+  web: SlackWebSession;
   imports: Map<string, SlackImportRecord>;
   runs: Map<string, SlackRunRecord>;
 };
@@ -170,7 +175,7 @@ function createSession(): Session {
     csrfToken: randomUUID(),
     notion: { runs: new Map() },
     figma: { oauth: createFigmaOAuthSession(), rest: {}, codex: createCodexBridgeSession(), runs: new Map() },
-    slack: { imports: new Map(), runs: new Map() },
+    slack: { web: {}, imports: new Map(), runs: new Map() },
   };
 }
 
@@ -477,15 +482,16 @@ app.get("/api/slack/status", async (req, res) => {
   const session = getSession(req, res).slack;
   cleanupSlackRuns(session.runs);
   cleanupSlackImports(session.imports);
-  if (!session.tokens) return res.json({ connected: false, message: "Slack MCP OAuth 연결이 필요합니다." });
+  const web = slackWebStatus(session.web);
+  if (!session.tokens) return res.json({ connected: false, web, message: "Slack MCP OAuth 연결이 필요합니다." });
   let adapter: McpAdapter | undefined;
   try {
     adapter = await connectToSlackMcp(await ensureSlackAccessToken(session));
     const tools = await adapter.listTools();
-    return res.json({ connected: true, tools });
+    return res.json({ connected: true, tools, web });
   } catch (error) {
     if (error instanceof Error && /REAUTH_REQUIRED|NOT_CONNECTED|401|unauthorized/i.test(error.message)) session.tokens = undefined;
-    return res.status(401).json({ connected: false, message: error instanceof Error ? error.message : String(error) });
+    return res.status(401).json({ connected: false, web, message: error instanceof Error ? error.message : String(error) });
   } finally {
     await adapter?.close().catch(() => undefined);
   }
@@ -536,8 +542,79 @@ app.get("/api/slack/auth/callback", async (req, res) => {
 
 app.post("/api/slack/auth/logout", (req, res) => {
   const rootSession = getSession(req, res);
-  rootSession.slack = { imports: new Map(), runs: new Map() };
+  rootSession.slack = { web: {}, imports: new Map(), runs: new Map() };
   res.status(204).end();
+});
+
+/**
+ * 토큰이 곧 자격증명이라 broker도 client_secret도 없다. Figma 개인 액세스 토큰과 같은 경로다.
+ */
+app.post("/api/slack/auth/token", async (req, res, next) => {
+  try {
+    const session = getSession(req, res).slack;
+    const body = req.body as { token?: unknown };
+    const token = typeof body.token === "string" ? body.token : "";
+    await connectSlackWebToken(session.web, token);
+    res.json(slackWebStatus(session.web));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/slack/auth/token/disconnect", (req, res) => {
+  clearSlackWeb(getSession(req, res).slack.web);
+  res.status(204).end();
+});
+
+app.post("/api/slack/web/extract/stream", async (req, res) => {
+  const rootSession = getSession(req, res);
+  const session = rootSession.slack;
+  const body = req.body as Partial<SlackExtractionInput>;
+  const input: SlackExtractionInput = {
+    mode: "web",
+    target: typeof body.target === "string" ? body.target.trim().slice(0, 2_000) : "",
+    oldest: typeof body.oldest === "string" ? body.oldest.trim().slice(0, 80) : undefined,
+    latest: typeof body.latest === "string" ? body.latest.trim().slice(0, 80) : undefined,
+    includeFiles: body.includeFiles === true,
+  };
+  if (!input.target) return res.status(400).json({ message: "Slack 채널 ID 또는 대화 URL을 입력해 주세요." });
+  if (!session.web.token) return res.status(401).json({ message: "Slack 토큰을 먼저 연결해 주세요." });
+  const run = createSlackRun(rootSession.id, input);
+  addSlackRunToSession(session.runs, run);
+  res.status(200);
+  res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-MCP-Trace-Run", run.id);
+  res.flushHeaders();
+  // 사용자가 창을 닫으면 남은 요청을 계속 보낼 이유가 없다. Slack 요청 한도도 아낀다.
+  const controller = new AbortController();
+  res.on("close", () => controller.abort());
+  const write = async (event: ExtractionEvent) => {
+    upsertSlackRunEvent(run, event);
+    if (!res.writableEnded) res.write(`${JSON.stringify(event)}\n`);
+  };
+  try {
+    await runSlackWebExtraction(session.web, run, write, controller.signal);
+  } catch (error) {
+    if (error instanceof SlackWebApiError && error.status === 401) clearSlackWeb(session.web);
+    await write({
+      type: "fatal",
+      id: "fatal",
+      order: Number.MAX_SAFE_INTEGER,
+      group: "summary",
+      label: "Slack 추출 중단",
+      state: "error",
+      provider: "slack",
+      runId: run.id,
+      origin: "internal",
+      startedAt: new Date().toISOString(),
+      message: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    run.completedAt = new Date().toISOString();
+    res.end();
+  }
 });
 
 app.post("/api/slack/imports", express.raw({ type: ["application/zip", "application/octet-stream"], limit: "250mb" }), (req, res) => {
@@ -1170,6 +1247,12 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   const message = error instanceof Error ? error.message : String(error);
   // Figma REST가 알려준 사유는 그 상태 코드가 진실이다. 401은 재인증, 429는 한도 초과처럼
   // 화면이 다르게 안내해야 하는데 전부 500으로 뭉개면 구분할 방법이 사라진다.
+  // Slack이 알려준 사유의 상태 코드가 진실이다. 403(scope 부족)과 404(채널 없음)는
+  // 화면이 다르게 안내해야 하는데 전부 500으로 뭉개면 구분할 방법이 사라진다.
+  if (error instanceof SlackWebApiError) {
+    if (error.retryAfter) res.setHeader("Retry-After", String(error.retryAfter));
+    return res.status(error.status >= 400 && error.status < 600 ? error.status : 502).json({ message, slackError: error.slackError });
+  }
   if (error instanceof FigmaRestApiError) {
     if (error.retryAfter) res.setHeader("Retry-After", String(error.retryAfter));
     return res.status(error.status >= 400 && error.status < 600 ? error.status : 502).json({ message });

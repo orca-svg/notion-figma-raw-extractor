@@ -19,6 +19,7 @@ function manifestExtra(run: SlackRunRecord): Record<string, unknown> {
       conversations: normalized.conversations.length,
       messages: normalized.messages.length,
       files: normalized.files.length,
+      coverage: normalized.coverage,
       provenance: normalized.provenance,
     } : undefined,
   };
@@ -53,7 +54,13 @@ export function buildSlackRunZip(run: SlackRunRecord): Uint8Array {
       "",
       run.input.mode === "export"
         ? "공식 Slack JSON Export를 로컬에서 정규화했습니다. files/index.json의 링크는 실제 첨부 바이너리가 아닐 수 있습니다."
-        : "공식 Slack MCP OAuth로 인증 사용자가 접근할 수 있는 대화만 읽었습니다. 조직 전체 DM Export가 아닙니다.",
+        : run.input.mode === "web"
+          ? "Slack Web API를 이 PC에서 직접 호출해 토큰 소유자가 볼 수 있는 채널 하나만 읽었습니다. 조직 전체 Export가 아닙니다."
+          : "공식 Slack MCP OAuth로 인증 사용자가 접근할 수 있는 대화만 읽었습니다. 조직 전체 DM Export가 아닙니다.",
+      "",
+      run.normalized?.coverage
+        ? `- 어디까지 읽었는지는 manifest.json의 normalized.coverage를 보세요. historyTruncated 또는 threadsTruncated가 true면 일부 구간이 빠져 있습니다.`
+        : "",
     ],
   });
 }

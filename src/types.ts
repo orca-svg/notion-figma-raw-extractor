@@ -109,14 +109,25 @@ export type FigmaExtractionOptions = {
   mode: "live" | "demo";
 };
 
+export type SlackWebStatus = {
+  connected: boolean;
+  tokenType?: "user" | "bot";
+  teamId?: string;
+  teamName?: string;
+  userId?: string;
+  userName?: string;
+};
+
 export type SlackConnectionStatus = {
   connected: boolean;
   tools?: ToolDescriptor[];
+  /** MCP OAuth와 별개로 붙이는 Web API 토큰 상태. */
+  web?: SlackWebStatus;
   message?: string;
 };
 
 export type SlackExtractionOptions = {
-  mode: "export" | "mcp";
+  mode: "export" | "mcp" | "web";
   importId?: string;
   target?: string;
   oldest?: string;

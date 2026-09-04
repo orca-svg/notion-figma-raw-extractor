@@ -10,7 +10,7 @@ Notion·Figma·Slack의 원문 추출, Tool 입력, 원시 응답, 소요 시간
 - `/notion/tools`: Notion MCP Tool 지도와 워크스페이스별 가용 상태
 - `/figma`: Figma Desktop/Remote/Codex Bridge/개발 Plugin 연결, Design·FigJam 노드 추출과 근거 기반 질문
 - `/figma/tools`: Desktop/Remote/Codex/Plugin 및 파일 유형별 Figma 읽기 경로 지도
-- `/slack`: 공식 Slack Export ZIP 정규화와 사용자 범위 Slack MCP 조회
+- `/slack`: 개인 토큰으로 채널 하나 추출, 공식 Export ZIP 정규화, 사용자 범위 Slack MCP 조회
 - `/slack/tools`: 관리자 Export와 Slack MCP 역할·Tool 지도
 - `/`와 기존 `/tools`는 각각 `/notion`, `/notion/tools`로 이동합니다.
 
@@ -229,6 +229,26 @@ assets/index.json                    에셋별 사용 노드 목록
 
 ## Slack 연결과 전달 형식
 
+### 채널 하나 · 개인 토큰 (기본)
+
+Slack Web API를 이 PC에서 직접 호출합니다. `mcp.slack.com` 같은 중간 서버를 거치지 않으므로 조직이 MCP를 승인하지 않아도 동작하고, 오가는 경로는 이 PC와 `slack.com` 둘뿐입니다. Figma 개인 액세스 토큰과 같은 구조로 토큰은 서버 세션 메모리에만 두며 파일이나 브라우저 저장소에 쓰지 않습니다.
+
+토큰은 [api.slack.com/apps](https://api.slack.com/apps)에서 앱을 만들고 `OAuth & Permissions`에서 발급합니다. 필요한 scope는 다섯 개입니다.
+
+| scope | 쓰임 |
+| --- | --- |
+| `channels:history` | 공개 채널 메시지 |
+| `groups:history` | 비공개 채널 메시지 |
+| `channels:read` | 채널 이름·종류 |
+| `groups:read` | 비공개 채널 메타데이터 |
+| `users:read` | 작성자 ID를 사람 이름으로 |
+
+User Token(`xoxp-`)이면 토큰 주인이 이미 들어가 있는 채널을 읽습니다. Bot Token(`xoxb-`)이면 대상 채널에서 `/invite @앱이름`으로 먼저 초대해야 합니다.
+
+`conversations.history`와 `conversations.replies`를 cursor로 끝까지 따라가고, `reply_count`가 있는 스레드를 모두 읽은 뒤 `users.info`로 작성자 이름을 채웁니다. 어디까지 읽었는지는 `manifest.json`의 `normalized.coverage`에 남습니다. `historyTruncated` 또는 `threadsTruncated`가 `true`면 일부 구간이 빠져 있다는 뜻입니다.
+
+Slack이 실패도 HTTP 200에 `{ok:false, error:…}`로 돌려주므로 그 코드를 조치가 갈리는 안내로 바꿔 올립니다. `missing_scope`는 부족한 scope 이름을, `channel_not_found`는 확인할 것을 함께 알려주고, 어느 method에서 났는지도 메시지에 남깁니다. 429는 `Retry-After`만큼 쉬고 최대 5회까지 다시 부릅니다.
+
 ### 공식 Export ZIP
 
 NH Workspace/Org Owner에게 `All channels and conversations` 범위의 원본 JSON Export ZIP, export 기간, workspace 이름, 포함 범위 확인을 요청합니다. ZIP은 압축 해제하거나 내부 파일명을 바꾸지 않고 `/slack`에 올립니다. 공개 채널만 있는 Export도 처리하지만 비공개 채널·DM 전체 포함 여부는 Slack 플랜과 관리자 승인을 따릅니다.
@@ -238,6 +258,8 @@ NH Workspace/Org Owner에게 `All channels and conversations` 범위의 원본 J
 ### Slack MCP OAuth
 
 공식 `https://mcp.slack.com/mcp`에 PKCE OAuth로 연결합니다. 요청 scope는 채널·그룹·DM history/read, `files:read`, `users:read`이며 인증 사용자가 볼 수 있는 대화만 읽습니다. 채널 ID 또는 Slack 대화 URL을 입력하면 history와 thread replies를 정규화합니다. 조직 전체 DM을 읽는 경로가 아니며 전체 DM은 관리자 Export를 사용합니다.
+
+이 경로도 cursor를 끝까지 따라가고 스레드와 작성자를 모두 읽습니다. 다만 MCP 서버가 제공하는 Tool에 따라 할 수 있는 일이 달라집니다. 사용자 조회 Tool이 없으면 메시지에 실려 온 프로필만 남고, 그 사실이 `coverage.users.source`에 기록됩니다. 조직 승인이 필요하다는 점 때문에 파일럿 기본 경로는 위의 개인 토큰입니다.
 
 Figma 실행 기록은 서버 메모리에 1시간 동안, 세션당 최근 3개를 보관합니다. JSON 파트는 하나당 24MB(수신 32MB), 에셋은 하나당 48MB, 실행당 총 2GB까지 저장합니다. 큰 파일에서 ZIP을 조립하려면 Node 힙이 필요하므로 `start.command`와 `start.bat`이 `--max-old-space-size=8192`를 설정합니다. 모두 메모리에 두므로 실질 안전선은 1~1.5GB이고, 그 이상은 디스크로 흘려쓰는 구조가 필요합니다. 서버 재시작 시 인증 정보와 실행 기록은 사라지며 사용자가 ZIP을 선택했을 때만 영구 파일을 만듭니다.
 
@@ -283,6 +305,9 @@ Slack:
 - `POST /api/slack/auth/start`
 - `GET /api/slack/auth/callback`
 - `POST /api/slack/auth/logout`
+- `POST /api/slack/auth/token`
+- `POST /api/slack/auth/token/disconnect`
+- `POST /api/slack/web/extract/stream`
 - `POST /api/slack/imports`
 - `POST /api/slack/imports/:importId/extract/stream`
 - `POST /api/slack/extract/stream`

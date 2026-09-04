@@ -315,7 +315,21 @@ export type SlackImportRecord = {
   data: Uint8Array;
 };
 
-export type SlackExtractionMode = "export" | "mcp";
+/**
+ * 토큰이 곧 자격증명이라 중간 서버가 필요 없다. Figma 개인 액세스 토큰과 같은 구조로,
+ * 파일이나 브라우저에 쓰지 않고 서버 세션 메모리에만 둔다.
+ */
+export type SlackWebSession = {
+  token?: string;
+  tokenType?: "user" | "bot";
+  teamId?: string;
+  teamName?: string;
+  userId?: string;
+  userName?: string;
+  workspaceUrl?: string;
+};
+
+export type SlackExtractionMode = "export" | "mcp" | "web";
 
 export type SlackExtractionInput = {
   mode: SlackExtractionMode;
@@ -372,14 +386,29 @@ export type SlackNormalizedMessage = {
   raw: unknown;
 };
 
+/**
+ * 어디까지 읽었는지를 결과에 남긴다. Slack은 cursor로 페이지를 잇는데, 끝까지 따라가지 못하고
+ * 멈춘 것과 원래 그만큼인 것을 구분할 수 없으면 잘린 줄 모르고 잘린 데이터를 넘기게 된다.
+ */
+export type SlackExtractionCoverage = {
+  historyPages: number;
+  historyTruncated: boolean;
+  threadRoots: number;
+  threadsRead: number;
+  threadsTruncated: boolean;
+  users: { authorIds: number; resolved: number; source: "users_list" | "users_info" | "message_profile" | "none" };
+  files: { candidates: number; stored: number; skipped: number };
+};
+
 export type SlackNormalizedExport = {
   schemaVersion: 1;
-  source: "slack_export" | "slack_mcp";
+  source: "slack_export" | "slack_mcp" | "slack_web";
   importedAt: string;
   users: SlackUser[];
   conversations: SlackConversation[];
   messages: SlackNormalizedMessage[];
   files: SlackFileRef[];
+  coverage?: SlackExtractionCoverage;
   provenance: Record<string, unknown>;
 };
 
