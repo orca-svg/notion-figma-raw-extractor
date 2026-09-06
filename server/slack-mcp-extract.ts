@@ -43,6 +43,11 @@ function argsFor(tool: ToolDescriptor, values: Record<string, unknown>): Record<
   return Object.fromEntries(Object.entries(values).filter(([key, value]) => allowed.has(key) && value !== undefined && value !== ""));
 }
 
+/**
+ * 채널은 C, DM은 D, 비공개 채널과 그룹 DM은 G로 시작한다. 셋을 똑같이 받는다.
+ * 링크는 두 가지 모양으로 나온다 — 사이드바 우클릭의 "링크 복사"는 /archives/<ID>를,
+ * DM을 열어 둔 채 주소창을 복사하면 /client/<워크스페이스>/<ID>를 준다.
+ */
 export function parseSlackConversationTarget(value: string): { id?: string; url?: string } {
   const target = value.trim();
   if (!target) throw new Error("Slack 채널 또는 대화 URL을 입력해 주세요.");
@@ -50,11 +55,12 @@ export function parseSlackConversationTarget(value: string): { id?: string; url?
   try {
     const url = new URL(target);
     if (!/(^|\.)slack\.com$/i.test(url.hostname)) throw new Error("Slack URL이 아닙니다.");
-    const id = url.pathname.match(/\/archives\/([A-Z0-9]+)/i)?.[1]?.toUpperCase();
+    const id = (url.pathname.match(/\/archives\/([A-Z0-9]+)/i)
+      ?? url.pathname.match(/\/client\/[A-Z0-9]+\/([CDG][A-Z0-9]+)/i))?.[1]?.toUpperCase();
     return { id, url: url.toString() };
   } catch (error) {
     if (error instanceof Error && error.message === "Slack URL이 아닙니다.") throw error;
-    throw new Error("Slack 채널 ID 또는 slack.com 대화 URL을 입력해 주세요.");
+    throw new Error("Slack 채널·DM ID 또는 slack.com 대화 URL을 입력해 주세요.");
   }
 }
 

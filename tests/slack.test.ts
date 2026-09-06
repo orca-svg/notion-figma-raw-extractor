@@ -70,6 +70,10 @@ class SlackAdapter implements McpAdapter {
 describe("Slack MCP user-scoped extraction", () => {
   it("채널 URL을 해석하고 history와 replies를 정규화한다", async () => {
     expect(parseSlackConversationTarget("https://workspace.slack.com/archives/C1234567890/p1")).toEqual(expect.objectContaining({ id: "C1234567890" }));
+    // DM은 사이드바 링크 복사와 주소창 복사가 서로 다른 모양으로 나온다. 둘 다 받는다.
+    expect(parseSlackConversationTarget("https://workspace.slack.com/archives/D0987654321")).toEqual(expect.objectContaining({ id: "D0987654321" }));
+    expect(parseSlackConversationTarget("https://app.slack.com/client/T01ABCDEF/D0987654321")).toEqual(expect.objectContaining({ id: "D0987654321" }));
+    expect(parseSlackConversationTarget("d0987654321")).toEqual({ id: "D0987654321" });
     const run = createSlackRun("session", { mode: "mcp", target: "C1234567890", includeFiles: false });
     await runSlackMcpExtraction(new SlackAdapter(), run, (event) => upsertRunEvent(run, event));
     expect(run.normalized).toMatchObject({ source: "slack_mcp", provenance: { access: "authenticated_user_visible_conversations_only" } });
@@ -269,6 +273,74 @@ function understateCentralDirectorySizes(zip: Uint8Array): Uint8Array {
   return patched;
 }
 
+describe("Export ZIP은 Standard든 Corporate든 그대로 읽는다", () => {
+  const json = (value: unknown) => strToU8(JSON.stringify(value));
+  const users = json([
+    { id: "U1", name: "jun", profile: { display_name: "준엽" } },
+    { id: "U2", name: "hyeyeon", profile: { display_name: "혜연" } },
+  ]);
+
+  it("Corporate Export의 DM·그룹 DM을 채널과 함께 정규화한다", () => {
+    const normalized = parseSlackExportZip(zipSync({
+      "users.json": [users, { level: 0 }],
+      "channels.json": [json([{ id: "C1", name: "project", members: ["U1", "U2"] }]), { level: 0 }],
+      "dms.json": [json([{ id: "D0123456789", members: ["U1", "U2"] }]), { level: 0 }],
+      "mpims.json": [json([{ id: "G0123456789", name: "mpdm-jun--hyeyeon--siwon-1", members: ["U1", "U2"] }]), { level: 0 }],
+      "project/2026-09-01.json": [json([{ type: "message", user: "U1", text: "채널 글", ts: "1.0" }]), { level: 0 }],
+      "D0123456789/2026-09-01.json": [json([{ type: "message", user: "U2", text: "DM 본문", ts: "2.0" }]), { level: 0 }],
+      "mpdm-jun--hyeyeon--siwon-1/2026-09-01.json": [json([{ type: "message", user: "U1", text: "그룹 DM 본문", ts: "3.0" }]), { level: 0 }],
+    }));
+
+    expect(normalized.conversations.map((item) => item.kind)).toEqual(["public_channel", "dm", "mpim"]);
+    // DM은 ID만 오므로 참여자 이름으로 채운다. 결과물에 D0123456789만 남으면 누구와의 대화인지 알 수 없다.
+    expect(normalized.conversations[1]).toMatchObject({ id: "D0123456789", name: "dm-준엽-혜연" });
+    expect(normalized.messages.filter((item) => item.conversationId === "D0123456789").map((item) => item.text)).toEqual(["DM 본문"]);
+    expect(normalized.messages.filter((item) => item.conversationId === "G0123456789").map((item) => item.text)).toEqual(["그룹 DM 본문"]);
+    expect(normalized.provenance).toMatchObject({
+      exportScope: "includes_direct_messages",
+      composition: { publicChannels: 1, directMessages: 1, groupDirectMessages: 1, unknown: 0 },
+    });
+  });
+
+  it("공개 채널만 담긴 Standard Export도 그대로 읽고 DM이 없다고 남긴다", () => {
+    const normalized = parseSlackExportZip(zipSync({
+      "users.json": [users, { level: 0 }],
+      "channels.json": [json([{ id: "C1", name: "project", members: ["U1"] }]), { level: 0 }],
+      "project/2026-09-01.json": [json([{ type: "message", user: "U1", text: "채널 글", ts: "1.0" }]), { level: 0 }],
+    }));
+
+    expect(normalized.messages.map((item) => item.text)).toEqual(["채널 글"]);
+    expect(normalized.provenance).toMatchObject({
+      exportScope: "public_channels_only",
+      composition: { publicChannels: 1, directMessages: 0, groupDirectMessages: 0, referenceFiles: ["users.json", "channels.json"] },
+    });
+  });
+
+  it("dms.json이 빠져 있어도 폴더 이름으로 DM임을 알아본다", () => {
+    const normalized = parseSlackExportZip(zipSync({
+      "users.json": [users, { level: 0 }],
+      "channels.json": [json([]), { level: 0 }],
+      "D0123456789/2026-09-01.json": [json([{ type: "message", user: "U2", text: "목록 없는 DM", ts: "1.0" }]), { level: 0 }],
+      "mpdm-jun--hyeyeon-1/2026-09-01.json": [json([{ type: "message", user: "U1", text: "목록 없는 그룹 DM", ts: "2.0" }]), { level: 0 }],
+    }));
+
+    expect(normalized.conversations.map((item) => ({ id: item.id, kind: item.kind }))).toEqual([
+      { id: "D0123456789", kind: "dm" },
+      { id: "mpdm-jun--hyeyeon-1", kind: "mpim" },
+    ]);
+    expect(normalized.messages.map((item) => item.text)).toEqual(["목록 없는 DM", "목록 없는 그룹 DM"]);
+  });
+
+  it("소문자 채널 이름은 DM ID로 잘못 보지 않는다", () => {
+    const normalized = parseSlackExportZip(zipSync({
+      "users.json": [users, { level: 0 }],
+      "channels.json": [json([]), { level: 0 }],
+      "deploy2026notes/2026-09-01.json": [json([{ type: "message", user: "U1", text: "채널", ts: "1.0" }]), { level: 0 }],
+    }));
+    expect(normalized.conversations[0]).toMatchObject({ id: "unknown:deploy2026notes", kind: "unknown" });
+  });
+});
+
 describe("Slack Export 압축 폭탄", () => {
   it("중앙 디렉터리가 크기를 속여도 실제 해제 단계에서 상한이 걸린다", () => {
     const bomb = zipSync({
@@ -380,6 +452,46 @@ describe("Slack Web API 직접 추출", () => {
     const failure = await runSlackWebExtraction(session, run, () => undefined).catch((error: unknown) => error);
     expect((failure as SlackWebApiError).status).toBe(404);
     expect((failure as SlackWebApiError).message).toMatch(/채널/);
+  });
+
+  it("DM을 채널과 똑같이 읽고 상대 이름으로 대화 이름을 채운다", async () => {
+    stubSlackApi((method, params) => {
+      if (method === "auth.test") return { ok: true, team_id: "T1", team: "AEL", user_id: "U1" };
+      // DM의 conversations.info에는 name이 없고 상대 사용자 ID만 온다.
+      if (method === "conversations.info") return { ok: true, channel: { id: "D9", is_im: true, user: "U2" } };
+      if (method === "conversations.history") return { ok: true, messages: [{ user: "U2", text: "보고서 봤어요", ts: "1.0" }] };
+      if (method === "users.info") {
+        const id = params.get("user");
+        return { ok: true, user: { id, team_id: "T1", name: "hyeyeon", real_name: "서혜연", profile: { display_name: "혜연" } } };
+      }
+      return { ok: false, error: "unknown_method" };
+    });
+
+    const session = await connectedSession();
+    const run = createSlackRun("session", { mode: "web", target: "D9", includeFiles: false });
+    await runSlackWebExtraction(session, run, (event) => upsertRunEvent(run, event));
+
+    expect(run.normalized?.conversations[0]).toMatchObject({ id: "D9", name: "dm-혜연", kind: "dm" });
+    expect(run.normalized?.messages.map((message) => message.text)).toEqual(["보고서 봤어요"]);
+    expect(run.normalized?.messages[0].author).toBe("혜연");
+    expect(run.events.at(-1)?.state).toBe("success");
+  });
+
+  it("상대 이름을 못 읽어도 DM 추출은 계속한다", async () => {
+    stubSlackApi((method) => {
+      if (method === "auth.test") return { ok: true, team_id: "T1" };
+      if (method === "conversations.info") return { ok: true, channel: { id: "D9", is_im: true, user: "U2" } };
+      if (method === "conversations.history") return { ok: true, messages: [{ user: "U2", text: "안녕하세요", ts: "1.0" }] };
+      // users:read가 없으면 이름만 못 채운다. 메시지까지 잃으면 안 된다.
+      return { ok: false, error: "missing_scope", needed: "users:read" };
+    });
+
+    const session = await connectedSession();
+    const run = createSlackRun("session", { mode: "web", target: "D9", includeFiles: false });
+    await runSlackWebExtraction(session, run, (event) => upsertRunEvent(run, event));
+
+    expect(run.normalized?.conversations[0]).toMatchObject({ id: "D9", name: "D9", kind: "dm" });
+    expect(run.normalized?.messages.map((message) => message.text)).toEqual(["안녕하세요"]);
   });
 
   it("429를 만나면 Retry-After만큼 쉬고 다시 부른다", async () => {

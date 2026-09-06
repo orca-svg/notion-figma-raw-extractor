@@ -51,7 +51,7 @@ export function SlackTargetPanel({ options, connected, running, onChange, onUplo
         <div><p className="eyebrow">Slack source</p><h2 id="slack-target-title">가져올 대화</h2></div>
       </div>
       <div className="segmented-control" role="group" aria-label="Slack 추출 방식">
-        <button type="button" className={options.mode === "web" ? "active" : ""} aria-pressed={options.mode === "web"} onClick={() => patch({ mode: "web" })}>채널 하나</button>
+        <button type="button" className={options.mode === "web" ? "active" : ""} aria-pressed={options.mode === "web"} onClick={() => patch({ mode: "web" })}>대화 하나</button>
         <button type="button" className={options.mode === "export" ? "active" : ""} aria-pressed={options.mode === "export"} onClick={() => patch({ mode: "export" })}>공식 Export ZIP</button>
         <button type="button" disabled aria-disabled="true" title="이번 파일럿에서는 사용하지 않습니다">Slack MCP</button>
       </div>
@@ -65,13 +65,15 @@ export function SlackTargetPanel({ options, connected, running, onChange, onUplo
           </label>
           {options.importId ? <div className="selection-well"><strong>ZIP 보안 검사 완료</strong><p>추출을 시작하면 원본 ZIP은 정규화 후 메모리에서 삭제됩니다.</p></div> : null}
           {uploadError ? <p className="run-blocker-note" role="alert">{uploadError}</p> : null}
+          <p className="demo-note">공개 채널만 담긴 Export든 DM까지 담긴 Export든 그대로 받습니다. 어떤 범위가 들어왔는지는 추출 후 화면과 manifest.json에 남습니다.</p>
           <p className="demo-note">일반 Slack JSON Export에는 실제 첨부 파일이 아니라 인증이 필요한 파일 링크만 들어갈 수 있습니다.</p>
         </>
       ) : (
         <>
           <label className="field">
-            <span>채널 ID 또는 대화 URL</span>
-            <textarea rows={3} value={options.target ?? ""} onChange={(event) => patch({ target: event.target.value })} placeholder="C0123456789 또는 https://workspace.slack.com/archives/…" />
+            <span>채널 · DM ID 또는 대화 URL</span>
+            <textarea rows={3} value={options.target ?? ""} onChange={(event) => patch({ target: event.target.value })} placeholder="채널 C0123456789 · DM D0123456789 또는 Slack 대화 링크" />
+            <small>DM은 대화를 우클릭해 링크를 복사하면 D…로 시작하는 ID가 들어 있습니다. 읽으려면 토큰에 im:history 권한이 있어야 합니다.</small>
           </label>
           {/* datetime-local은 캘린더 아이콘까지 들어가 2열에서는 서로 겹친다. 한 줄에 하나씩 둔다. */}
           <label className="field">
@@ -82,7 +84,7 @@ export function SlackTargetPanel({ options, connected, running, onChange, onUplo
             <span>이때까지 (선택)</span>
             <input type="datetime-local" max={latestSelectable} value={toLocalInput(options.latest)} onChange={(event) => patch({ latest: toEpoch(event.target.value) })} />
           </label>
-          <p className="demo-note">기간을 좁히고 싶을 때만 고르세요. 비워두면 채널 전체를 읽습니다.</p>
+          <p className="demo-note">기간을 좁히고 싶을 때만 고르세요. 비워두면 대화 전체를 읽습니다.</p>
           <label className="toggle-row">
             <input type="checkbox" checked={options.includeFiles} onChange={(event) => patch({ includeFiles: event.target.checked })} />
             <span className="toggle-track" aria-hidden="true"><span /></span>
@@ -104,7 +106,7 @@ export function SlackTargetPanel({ options, connected, running, onChange, onUplo
         </>
       )}
       <button className="primary-button full" type="button" disabled={!canRun || running || uploading} onClick={onRun}>
-        {running ? "Slack 추출 중" : uploading ? "ZIP 검사 중" : options.mode === "export" ? "Export 대화 정규화" : options.mode === "web" ? "채널 추출" : "Slack MCP로 읽기"}
+        {running ? "Slack 추출 중" : uploading ? "ZIP 검사 중" : options.mode === "export" ? "Export 대화 정규화" : options.mode === "web" ? "대화 추출" : "Slack MCP로 읽기"}
       </button>
     </section>
   );

@@ -1,6 +1,10 @@
 import { parseSlackExportZip } from "./slack-export.js";
 import type { EmitEvent, ExtractionEvent, SlackImportRecord, SlackRunRecord } from "./types.js";
 
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
 export async function runSlackExportExtraction(
   source: SlackImportRecord,
   run: SlackRunRecord,
@@ -33,6 +37,13 @@ export async function runSlackExportExtraction(
     extracted: normalized.provenance,
   });
   run.normalized = normalized;
+  // Standard Export든 Corporate Export든 똑같이 읽지만, 담긴 범위는 ZIP마다 다르다.
+  // DM이 0건인 것과 애초에 안 담긴 것을 구분해 알려 줘야 담당자가 다시 요청할지 판단할 수 있다.
+  const composition = record(normalized.provenance.composition);
+  const dmCount = Number(composition?.directMessages ?? 0) + Number(composition?.groupDirectMessages ?? 0);
+  const scopeNote = dmCount
+    ? `DM ${dmCount}개가 함께 들어왔습니다.`
+    : "이 ZIP에는 DM이 들어 있지 않습니다. 공개 채널만 담는 Standard Export일 수 있으며, DM이 필요하면 관리자에게 DM을 포함한 Export를 요청해야 합니다.";
   await publish({
     type: "step",
     id: "02-normalize",
@@ -44,11 +55,12 @@ export async function runSlackExportExtraction(
     extracted: {
       users: normalized.users.length,
       conversations: normalized.conversations.length,
+      ...composition,
       messages: normalized.messages.length,
       threads: normalized.messages.filter((message) => Boolean(message.threadTs)).length,
       files: normalized.files.length,
     },
-    message: "Slack JSON Export에는 일반적으로 실제 첨부 바이너리가 아니라 인증이 필요한 파일 링크가 포함됩니다.",
+    message: `${scopeNote} Slack JSON Export에는 일반적으로 실제 첨부 바이너리가 아니라 인증이 필요한 파일 링크가 포함됩니다.`,
   });
   await publish({
     type: "complete",
@@ -60,8 +72,10 @@ export async function runSlackExportExtraction(
     startedAt: new Date().toISOString(),
     extracted: {
       source: "slack_export",
+      scope: normalized.provenance.exportScope,
       users: normalized.users.length,
       conversations: normalized.conversations.length,
+      ...composition,
       messages: normalized.messages.length,
       files: normalized.files.length,
     },

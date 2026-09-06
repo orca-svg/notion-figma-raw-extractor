@@ -11,7 +11,10 @@ type Props = {
   onDisconnectToken: () => Promise<void>;
 };
 
-const TOKEN_SCOPES = "channels:history, channels:read, groups:history, groups:read, users:read";
+// 채널만 읽을 때와 DM까지 읽을 때 필요한 권한이 다르다. 나눠서 보여줘야 DM에서
+// missing_scope를 만난 사람이 무엇을 더 넣어야 하는지 화면만 보고 알 수 있다.
+const CHANNEL_SCOPES = "channels:history, channels:read, groups:history, groups:read, users:read";
+const DM_SCOPES = "im:history, im:read, mpim:history, mpim:read";
 
 export function SlackConnectionPanel({ status, busy, onOAuth, onDisconnect, onRefresh, onConnectToken, onDisconnectToken }: Props) {
   const [token, setToken] = useState("");
@@ -48,7 +51,7 @@ export function SlackConnectionPanel({ status, busy, onOAuth, onDisconnect, onRe
           </div>
           {web.userName ? <p>@{web.userName}</p> : null}
           <p className="small-copy">
-            {web.tokenType === "bot" ? "Bot 토큰" : "User 토큰"} · 토큰 소유자가 볼 수 있는 채널만 읽습니다
+            {web.tokenType === "bot" ? "Bot 토큰" : "User 토큰"} · 토큰 소유자가 볼 수 있는 채널과 DM만 읽습니다
           </p>
           <button className="text-button" type="button" onClick={() => void handle(onRefresh)} disabled={busy}>연결 다시 확인</button>
           {" · "}
@@ -62,8 +65,10 @@ export function SlackConnectionPanel({ status, busy, onOAuth, onDisconnect, onRe
             <small>서버 메모리에만 두며 파일이나 브라우저 저장소에 쓰지 않습니다. 프로그램을 껐다 켜면 다시 붙여넣습니다.</small>
           </label>
           <div className="connection-instructions">
-            <p>api.slack.com/apps 에서 앱을 만들고, 사용자 토큰 범위에 다음 5개를 넣은 뒤 워크스페이스에 설치합니다.</p>
-            <p className="connection-detail">{TOKEN_SCOPES}</p>
+            <p>api.slack.com/apps 에서 앱을 만들고, 사용자 토큰 범위에 아래 권한을 넣은 뒤 워크스페이스에 설치합니다.</p>
+            <p className="connection-detail">{CHANNEL_SCOPES}</p>
+            <p>DM과 그룹 DM까지 읽으려면 다음 4개를 더 넣습니다.</p>
+            <p className="connection-detail">{DM_SCOPES}</p>
             <p>첨부 파일 원본까지 받으려면 files:read 를 함께 넣습니다.</p>
           </div>
           <button className="primary-button full" type="button" onClick={() => void connect()} disabled={!token || busy}>

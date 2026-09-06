@@ -63,6 +63,30 @@ function conversationKind(id: string, info: Record<string, unknown>): SlackConve
 }
 
 /**
+ * DM의 conversations.info에는 name이 없다. 상대 사용자 ID만 오므로 그대로 두면 결과물의
+ * 대화 이름이 D09XXXXXX라는 ID로 남아 누구와의 대화인지 알 수 없다. 한 번 더 조회해 채운다.
+ */
+async function resolveConversationName(
+  session: SlackWebSession,
+  id: string,
+  info: Record<string, unknown>,
+  kind: SlackConversation["kind"],
+  signal?: AbortSignal,
+): Promise<string> {
+  if (typeof info.name === "string" && info.name) return info.name;
+  if (kind !== "dm" || typeof info.user !== "string") return id;
+  try {
+    const payload = await slackWebCall<Record<string, unknown>>(session, "users.info", { user: info.user }, signal);
+    const user = usersFromPayloads([payload])[0];
+    const label = user?.displayName || user?.realName || user?.name;
+    return label ? `dm-${label}` : id;
+  } catch {
+    // 상대 이름을 못 읽어도 메시지 추출 자체는 계속한다.
+    return id;
+  }
+}
+
+/**
  * 사용자 토큰으로 Slack Web API를 직접 호출한다. mcp.slack.com을 거치지 않으므로 조직이
  * MCP를 승인하지 않아도 동작하고, 오가는 경로가 이 PC와 slack.com 둘뿐이다.
  */
@@ -75,7 +99,7 @@ export async function runSlackWebExtraction(
   let order = 0;
   const publish = (event: ExtractionEvent) => emit({ ...event, provider: "slack", runId: run.id, origin: event.tool ? "rest" : "internal" });
   const target = parseSlackConversationTarget(run.input.target ?? "");
-  if (!target.id) throw new Error("채널 ID를 확인하지 못했습니다. C…로 시작하는 ID나 /archives/ 링크를 넣어 주세요.");
+  if (!target.id) throw new Error("대화 ID를 확인하지 못했습니다. 채널은 C…, DM은 D…로 시작하는 ID나 Slack 대화 링크를 넣어 주세요.");
   const conversationId = target.id;
 
   // 1) 채널 정보 — 이름과 종류를 먼저 확인해야 결과물이 ID 뭉치로 남지 않는다.
@@ -85,7 +109,7 @@ export async function runSlackWebExtraction(
     id: "01-channel",
     order: ++order,
     group: "discovery",
-    label: "채널 정보 조회",
+    label: "대화 정보 조회",
     state: "running",
     tool: "conversations.info",
     request: { channel: conversationId },
@@ -93,10 +117,11 @@ export async function runSlackWebExtraction(
   });
   const infoResponse = await slackWebCall<{ channel?: Record<string, unknown> }>(session, "conversations.info", { channel: conversationId }, signal);
   const info = infoResponse.channel ?? {};
+  const kind = conversationKind(conversationId, info);
   const conversation: SlackConversation = {
     id: conversationId,
-    name: typeof info.name === "string" ? info.name : conversationId,
-    kind: conversationKind(conversationId, info),
+    name: await resolveConversationName(session, conversationId, info, kind, signal),
+    kind,
     members: [],
     raw: info,
   };
@@ -105,7 +130,7 @@ export async function runSlackWebExtraction(
     id: "01-channel",
     order,
     group: "discovery",
-    label: "채널 정보 조회",
+    label: "대화 정보 조회",
     state: "success",
     tool: "conversations.info",
     request: { channel: conversationId },
@@ -123,7 +148,7 @@ export async function runSlackWebExtraction(
     id: "02-history",
     order: ++order,
     group: "history",
-    label: "채널 메시지 조회",
+    label: "대화 메시지 조회",
     state: "running",
     tool: "conversations.history",
     request: historyRequest,
@@ -138,7 +163,7 @@ export async function runSlackWebExtraction(
     id: "02-history",
     order,
     group: "history",
-    label: "채널 메시지 조회",
+    label: "대화 메시지 조회",
     state: history.truncated ? "warning" : "success",
     tool: "conversations.history",
     request: historyRequest,
