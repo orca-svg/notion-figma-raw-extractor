@@ -145,6 +145,30 @@ function folderCandidates(conversation: SlackConversation): string[] {
 }
 
 /**
+ * Standard Export에는 dms.json·mpims.json이 아예 없고, Corporate Export라도 관리자가 일부만
+ * 추려 보내면 목록 파일이 빠질 수 있다. 그때 대화 폴더만 보고 종류를 되살린다.
+ * DM 폴더는 대화 ID(D…), 그룹 DM 폴더는 Slack이 만든 mpdm- 이름을 쓴다.
+ * 채널 이름은 Slack이 소문자로만 만들어 주므로 대문자로 고정한 ID 패턴과 부딪히지 않는다.
+ */
+function kindFromFolder(folder: string): SlackConversation["kind"] {
+  if (/^mpdm-/.test(folder)) return "mpim";
+  if (/^D[A-Z0-9]{7,}$/.test(folder)) return "dm";
+  return "unknown";
+}
+
+/**
+ * DM에는 채널 같은 이름이 없어 그대로 두면 D09XYZ8UVW라는 ID만 남는다. Export에는 users.json이
+ * 함께 오므로 참여자 이름으로 채운다. 관리자 Export는 특정 개인의 시점이 아니므로 양쪽을 다 적는다.
+ */
+function dmDisplayName(conversation: SlackConversation, byUser: Map<string, SlackUser>): string {
+  const names = conversation.members
+    .map((id) => byUser.get(id))
+    .map((user) => user?.displayName || user?.realName || user?.name)
+    .filter((name): name is string => Boolean(name));
+  return names.length ? `dm-${names.join("-")}` : conversation.id;
+}
+
+/**
  * 중앙 디렉터리가 신고한 크기는 업로더가 로컬 항목과 무관하게 조작할 수 있다.
  * 그래서 실제로 압축을 풀면서 항목별·전체 상한을 강제한다. 상한을 넘으면 그 자리에서 중단하므로
  * 신고 크기를 작게 속인 압축 폭탄도 메모리를 채우기 전에 걸린다.
@@ -215,7 +239,10 @@ export function parseSlackExportZip(data: Uint8Array): SlackNormalizedExport {
     if (!Array.isArray(rawMessages)) continue;
     let conversation = byFolder.get(folder);
     if (!conversation) {
-      conversation = unknownConversations.get(folder) ?? { id: `unknown:${folder}`, name: folder, kind: "unknown", members: [], raw: { folder } };
+      const inferred = kindFromFolder(folder);
+      conversation = unknownConversations.get(folder)
+        // 종류를 알아낸 폴더는 ID를 그대로 살려 준다. unknown:D9 같은 껍데기 ID를 만들지 않는다.
+        ?? { id: inferred === "unknown" ? `unknown:${folder}` : folder, name: folder, kind: inferred, members: [], raw: { folder } };
       unknownConversations.set(folder, conversation);
     }
     for (const raw of rawMessages) {
@@ -245,8 +272,19 @@ export function parseSlackExportZip(data: Uint8Array): SlackNormalizedExport {
     }
   }
   conversations.push(...unknownConversations.values());
+  for (const conversation of conversations) {
+    if (conversation.kind === "dm" && conversation.name === conversation.id) conversation.name = dmDisplayName(conversation, byUser);
+  }
   messages.sort((left, right) => Number(left.ts) - Number(right.ts));
   if (!messages.length) throw new Error("Slack Export에서 메시지 JSON을 찾지 못했습니다.");
+  const composition = {
+    publicChannels: conversations.filter((item) => item.kind === "public_channel").length,
+    privateChannels: conversations.filter((item) => item.kind === "private_channel").length,
+    directMessages: conversations.filter((item) => item.kind === "dm").length,
+    groupDirectMessages: conversations.filter((item) => item.kind === "mpim").length,
+    unknown: conversations.filter((item) => item.kind === "unknown").length,
+    referenceFiles: [...REFERENCE_FILES].filter((name) => safeFiles[name] !== undefined),
+  };
   return {
     schemaVersion: 1,
     source: "slack_export",
@@ -259,6 +297,14 @@ export function parseSlackExportZip(data: Uint8Array): SlackNormalizedExport {
       format: "official_slack_json_export",
       compressedBytes: data.byteLength,
       entries: inspected.length,
+      // 무엇이 들어 있는 ZIP이었는지 결과물에 남긴다. DM이 0건인 것과 애초에 담기지 않은 것은
+      // 결과만 봐서는 구분할 수 없는데, 그 둘은 담당자가 해야 할 일이 다르다.
+      composition,
+      exportScope: composition.directMessages || composition.groupDirectMessages
+        ? "includes_direct_messages"
+        : composition.privateChannels
+          ? "includes_private_channels"
+          : "public_channels_only",
       note: "Slack JSON Export의 file 값은 링크와 metadata이며 실제 첨부 바이너리가 아닐 수 있습니다.",
     },
   };

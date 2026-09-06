@@ -233,7 +233,7 @@ assets/index.json                    에셋별 사용 노드 목록
 
 Slack Web API를 이 PC에서 직접 호출합니다. `mcp.slack.com` 같은 중간 서버를 거치지 않으므로 조직이 MCP를 승인하지 않아도 동작하고, 오가는 경로는 이 PC와 `slack.com` 둘뿐입니다. Figma 개인 액세스 토큰과 같은 구조로 토큰은 서버 세션 메모리에만 두며 파일이나 브라우저 저장소에 쓰지 않습니다.
 
-토큰은 [api.slack.com/apps](https://api.slack.com/apps)에서 앱을 만들고 `OAuth & Permissions`에서 발급합니다. 필요한 scope는 다섯 개입니다.
+토큰은 [api.slack.com/apps](https://api.slack.com/apps)에서 앱을 만들고 `OAuth & Permissions`에서 발급합니다. 채널만 읽는다면 다섯 개면 됩니다.
 
 | scope | 쓰임 |
 | --- | --- |
@@ -245,13 +245,44 @@ Slack Web API를 이 PC에서 직접 호출합니다. `mcp.slack.com` 같은 중
 
 User Token(`xoxp-`)이면 토큰 주인이 이미 들어가 있는 채널을 읽습니다. Bot Token(`xoxb-`)이면 대상 채널에서 `/invite @앱이름`으로 먼저 초대해야 합니다.
 
+#### DM과 그룹 DM
+
+DM은 `conversations.*`를 채널과 똑같이 쓰지만 scope가 따로입니다. 위 다섯 개만 있는 토큰으로 `D…`를 넣으면 `missing_scope`가 납니다.
+
+| scope | 쓰임 |
+| --- | --- |
+| `im:history` | 1:1 DM 메시지 |
+| `im:read` | DM 대화 정보 |
+| `mpim:history` | 그룹 DM 메시지 |
+| `mpim:read` | 그룹 DM 대화 정보 |
+
+DM은 **User Token(`xoxp-`)만** 됩니다. Bot Token은 사람끼리 주고받은 DM에 들어갈 수 없고, 봇을 상대로 한 DM만 읽습니다. 읽히는 범위는 토큰 주인이 참여한 대화뿐이며, 남의 DM은 어떤 scope로도 열리지 않습니다 — 조직 전체 DM은 관리자 Export를 씁니다.
+
+대화 ID는 채널은 `C…`, DM은 `D…`, 비공개 채널과 그룹 DM은 `G…`로 시작합니다. Slack에서 대화를 우클릭해 링크를 복사하면 `/archives/D…` 형태로, DM을 열어 둔 채 주소창을 복사하면 `/client/T…/D…` 형태로 나오는데 둘 다 그대로 붙여넣을 수 있습니다.
+
+DM의 `conversations.info`에는 `name`이 없고 상대 사용자 ID만 옵니다. 그대로 두면 결과물에 `D09XXXXXX`만 남으므로 `users.info`로 한 번 더 조회해 `dm-<상대 이름>`으로 채웁니다. 이 조회가 실패해도 메시지 추출은 계속되고 대화 이름만 ID로 남습니다.
+
 `conversations.history`와 `conversations.replies`를 cursor로 끝까지 따라가고, `reply_count`가 있는 스레드를 모두 읽은 뒤 `users.info`로 작성자 이름을 채웁니다. 어디까지 읽었는지는 `manifest.json`의 `normalized.coverage`에 남습니다. `historyTruncated` 또는 `threadsTruncated`가 `true`면 일부 구간이 빠져 있다는 뜻입니다.
 
 Slack이 실패도 HTTP 200에 `{ok:false, error:…}`로 돌려주므로 그 코드를 조치가 갈리는 안내로 바꿔 올립니다. `missing_scope`는 부족한 scope 이름을, `channel_not_found`는 확인할 것을 함께 알려주고, 어느 method에서 났는지도 메시지에 남깁니다. 429는 `Retry-After`만큼 쉬고 최대 5회까지 다시 부릅니다.
 
 ### 공식 Export ZIP
 
-NH Workspace/Org Owner에게 `All channels and conversations` 범위의 원본 JSON Export ZIP, export 기간, workspace 이름, 포함 범위 확인을 요청합니다. ZIP은 압축 해제하거나 내부 파일명을 바꾸지 않고 `/slack`에 올립니다. 공개 채널만 있는 Export도 처리하지만 비공개 채널·DM 전체 포함 여부는 Slack 플랜과 관리자 승인을 따릅니다.
+NH Workspace/Org Owner에게 원본 JSON Export ZIP, export 기간, workspace 이름, 포함 범위 확인을 요청합니다. ZIP은 압축 해제하거나 내부 파일명을 바꾸지 않고 `/slack`에 올립니다.
+
+**Export 종류를 가리지 않습니다.** 공개 채널만 담긴 Export도, 비공개 채널과 DM까지 담긴 Export도 같은 경로로 읽습니다. `channels.json`·`groups.json`·`dms.json`·`mpims.json` 중 있는 것만 읽고, 목록 파일이 빠져 있어도 대화 폴더 이름으로 종류를 되살립니다 — DM 폴더는 대화 ID(`D…`), 그룹 DM 폴더는 Slack이 만든 `mpdm-` 이름을 씁니다. 채널 이름은 Slack이 소문자로만 만들어 주므로 대문자로 고정한 ID 패턴과 부딪히지 않습니다.
+
+DM은 이름이 없어 그대로 두면 `D09XYZ8UVW`라는 ID만 남으므로 `users.json`의 참여자 이름으로 `dm-준엽-혜연`처럼 채웁니다. 관리자 Export는 특정 개인의 시점이 아니라서 양쪽을 다 적습니다.
+
+무엇이 담긴 ZIP이었는지는 `manifest.json`의 `provenance.composition`과 `provenance.exportScope`에 남습니다. DM이 0건인 것과 애초에 담기지 않은 것은 결과만 봐서는 구분할 수 없는데 그 둘은 담당자가 할 일이 다르므로, DM이 하나도 없으면 화면에도 그 사실과 다시 요청해야 한다는 안내가 함께 뜹니다.
+
+| exportScope | 뜻 |
+| --- | --- |
+| `public_channels_only` | 공개 채널만. DM이 필요하면 관리자에게 다시 요청해야 합니다 |
+| `includes_private_channels` | 비공개 채널까지 있으나 DM은 없음 |
+| `includes_direct_messages` | DM 또는 그룹 DM이 함께 들어옴 |
+
+Slack이 DM을 Export에 넣어 주는지는 플랜과 관리자 승인을 따릅니다. 도구 쪽 제약이 아니라 Slack 쪽 제약입니다.
 
 업로드는 로컬 메모리에서 250MB까지 받습니다. 압축 해제 전에 파일 수, 개별·전체 해제 크기, 압축비, 상위 경로를 검사하고 정규화가 끝나면 원본 byte를 지웁니다. 결과 ZIP에는 `users.json`, `conversations/*.ndjson`, `files/index.json`과 provenance가 들어갑니다. 일반 JSON Export의 파일 값은 실제 첨부가 아니라 인증이 필요한 링크일 수 있습니다.
 
