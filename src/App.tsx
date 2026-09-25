@@ -2,17 +2,16 @@ import { startTransition, useCallback, useEffect, useMemo, useRef, useState, typ
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   connectPat,
-  cancelCodexAuth,
+  cancelCodexLogin,
   disconnect,
-  disconnectFigmaRemote,
   disconnectFigmaRest,
   disconnectFigmaPlugin,
+  getCodexStatus,
   getFigmaStatus,
   getStatus,
-  startFigmaOAuth,
   connectFigmaRestPat,
+  scanFigmaScreens,
   startPluginPairing,
-  startCodexFigmaOAuth,
   startCodexLogin,
   startOAuth,
   streamExtraction,
@@ -38,7 +37,7 @@ import { ExtractionTimeline } from "./components/ExtractionTimeline";
 import { FigmaConnectionPanel } from "./components/FigmaConnectionPanel";
 import { FigmaAnswerCard } from "./components/FigmaAnswerCard";
 import { FigmaHistoryCard } from "./components/FigmaHistoryCard";
-import { FigmaTargetPanel } from "./components/FigmaTargetPanel";
+import { deviceKey, FigmaTargetPanel } from "./components/FigmaTargetPanel";
 import { FigmaToolsGuide } from "./components/FigmaToolsGuide";
 import { ReadPathStrip } from "./components/ReadPathStrip";
 import { TargetPanel } from "./components/TargetPanel";
@@ -48,13 +47,14 @@ import { SlackTargetPanel } from "./components/SlackTargetPanel";
 import { SlackToolsGuide } from "./components/SlackToolsGuide";
 import type {
   AppView,
+  CodexCliStatus,
   ConnectionStatus,
   ExtractionEvent,
   ExtractionOptions,
   FigmaConnectionStatus,
   FigmaExtractionOptions,
   FigmaQuestionAnswer,
-  FigmaTransport,
+  FigmaScreenProposal,
   Provider,
   SlackConnectionStatus,
   SlackExtractionOptions,
@@ -72,39 +72,18 @@ const INITIAL_NOTION_OPTIONS: ExtractionOptions = {
   includeWorkspace: false,
   mode: "live",
 };
-const INITIAL_FIGMA_OPTIONS: FigmaExtractionOptions = {
-  target: "",
-  targetMode: "link",
-  scope: "node",
-  transport: "desktop",
-  includeVariables: true,
-  includeCodeConnect: true,
-  includeMotion: true,
-  includeLibraries: false,
-  includeAssets: false,
-  clientFrameworks: "unknown",
-  clientLanguages: "unknown",
-  codeConnectLabel: "",
-  question: "",
-  mode: "live",
-};
+const INITIAL_FIGMA_OPTIONS: FigmaExtractionOptions = { target: "", scope: "node", question: "" };
 const FIGMA_SESSION_KEY = "mcp-trace-studio:figma-options";
 const INITIAL_SLACK_OPTIONS: SlackExtractionOptions = { mode: "web", includeFiles: false, target: "", oldest: "", latest: "" };
 
 function initialFigmaOptions(): FigmaExtractionOptions {
   try {
     const saved = JSON.parse(window.sessionStorage.getItem(FIGMA_SESSION_KEY) ?? "null") as Partial<FigmaExtractionOptions> | null;
-    const transport: FigmaTransport = saved?.transport === "remote" || saved?.transport === "codex" || saved?.transport === "plugin" ? saved.transport : "desktop";
+    // 예전 버전이 저장한 transport·MCP 옵션은 버리고 지금 쓰는 값만 되살린다. 화면 크기 선택은 페이지마다 다시 고른다.
     return {
-      ...INITIAL_FIGMA_OPTIONS,
-      ...saved,
-      transport,
-      // 페이지 추출은 Plugin 경로 전용이다. 다른 transport로 복원하면서 scope를 그대로 두면
-      // 링크 입력란이 숨겨진 채 실행 버튼도 잠기는 막다른 상태가 된다.
-      scope: transport === "plugin" && saved?.scope === "current_page" ? "current_page" : "node",
-      targetMode: transport === "desktop" && saved?.targetMode === "selection" ? "selection" : "link",
       target: typeof saved?.target === "string" ? saved.target : "",
-      mode: "live",
+      scope: saved?.scope === "current_page" ? "current_page" : "node",
+      question: typeof saved?.question === "string" ? saved.question : "",
     };
   } catch {
     return INITIAL_FIGMA_OPTIONS;
@@ -159,7 +138,7 @@ function latestFigmaAnswer(events: ExtractionEvent[]): FigmaQuestionAnswer | und
 }
 
 function FigmaStage({ options, status }: { options: FigmaExtractionOptions; status: FigmaConnectionStatus }) {
-  const type = options.targetMode === "selection" ? "현재 선택 · 자동 감지" : /\/board\//.test(options.target) ? "FigJam" : /\/design\//.test(options.target) ? "Figma Design" : "노드 링크 대기";
+  const type = options.scope === "current_page" ? "열린 페이지 전체" : /\/board\//.test(options.target) ? "FigJam" : /\/design\//.test(options.target) ? "Figma Design" : "노드 링크 대기";
   return (
     <section className="provider-stage figma-stage" aria-label="Figma 추출 대상 스테이지">
       <div className="provider-stage-inner">
@@ -171,10 +150,10 @@ function FigmaStage({ options, status }: { options: FigmaExtractionOptions; stat
             <span className="preview-node three" />
             <div className="preview-caption">
               <b>{type}</b>
-              <small>{status.connected ? `${options.transport} · ${status.tools?.length ?? 0} tools` : `${options.transport} 연결 대기`}</small>
+              <small>{status.connected ? `plugin · ${status.plugin?.meta?.pageName ?? "현재 페이지"}` : "plugin 연결 대기"}</small>
             </div>
           </div>
-          <div className="trace-layer layer-one">context</div><div className="trace-layer layer-two">variables</div><div className="trace-layer layer-three">raw</div>
+          <div className="trace-layer layer-one">screens</div><div className="trace-layer layer-two">groups</div><div className="trace-layer layer-three">raw</div>
         </div>
       </div>
     </section>
@@ -208,12 +187,12 @@ export default function App() {
   const reducedMotion = useReducedMotion();
   const [notionStatus, setNotionStatus] = useState<ConnectionStatus>({ connected: false });
   const [slackStatus, setSlackStatus] = useState<SlackConnectionStatus>({ connected: false });
-  const [figmaStatuses, setFigmaStatuses] = useState<Record<FigmaTransport, FigmaConnectionStatus>>({
-    desktop: { connected: false, transport: "desktop" },
-    remote: { connected: false, transport: "remote", beta: true },
-    codex: { connected: false, transport: "codex", beta: true },
-    plugin: { connected: false, transport: "plugin", beta: true, plugin: { connected: false }, restOAuth: { connected: false } },
-  });
+  const [figmaStatus, setFigmaStatus] = useState<FigmaConnectionStatus>({ connected: false, plugin: { connected: false }, restOAuth: { connected: false } });
+  const [codexStatus, setCodexStatus] = useState<CodexCliStatus>();
+  const [screenProposal, setScreenProposal] = useState<FigmaScreenProposal>();
+  const [screenScanning, setScreenScanning] = useState(false);
+  const [screenScanError, setScreenScanError] = useState<string>();
+  const [selectedScreenDevices, setSelectedScreenDevices] = useState<string[]>([]);
   const [statusLoading, setStatusLoading] = useState(true);
   const [expectedEmail, setExpectedEmail] = useState("");
   const [notionOptions, setNotionOptions] = useState(INITIAL_NOTION_OPTIONS);
@@ -245,9 +224,12 @@ export default function App() {
     }
   }, []);
 
-  const refreshFigma = useCallback(async (transport: FigmaTransport) => {
-    const next = await getFigmaStatus(transport);
-    setFigmaStatuses((current) => ({ ...current, [transport]: next }));
+  const refreshFigma = useCallback(async () => {
+    setFigmaStatus(await getFigmaStatus());
+  }, []);
+
+  const refreshCodex = useCallback(async () => {
+    setCodexStatus(await getCodexStatus());
   }, []);
 
   const refreshSlack = useCallback(async () => {
@@ -257,7 +239,7 @@ export default function App() {
 
   useEffect(() => {
     setStatusLoading(true);
-    void Promise.all([refreshNotion(), refreshSlack(), refreshFigma("desktop"), refreshFigma("remote"), refreshFigma("codex"), refreshFigma("plugin")]).finally(() => setStatusLoading(false));
+    void Promise.all([refreshNotion(), refreshSlack(), refreshFigma()]).finally(() => setStatusLoading(false));
     const params = new URLSearchParams(window.location.search);
     if (params.get("restAuth") === "error") setFigmaError(params.get("reason") || "Figma 메타데이터 연결에 실패했습니다.");
     if (window.location.pathname.startsWith("/slack") && params.get("auth") === "error") setSlackError(params.get("reason") || "Slack OAuth 연결에 실패했습니다.");
@@ -265,20 +247,26 @@ export default function App() {
   }, [refreshFigma, refreshNotion, refreshSlack]);
 
   useEffect(() => {
-    window.sessionStorage.setItem(FIGMA_SESSION_KEY, JSON.stringify({ ...figmaOptions, mode: "live" }));
+    window.sessionStorage.setItem(FIGMA_SESSION_KEY, JSON.stringify({ target: figmaOptions.target, scope: figmaOptions.scope, question: figmaOptions.question }));
   }, [figmaOptions]);
 
   useEffect(() => {
-    if (figmaStatuses.codex.authFlow?.state !== "waiting") return;
-    const timer = window.setInterval(() => void refreshFigma("codex"), 2_000);
+    if (codexStatus?.authFlow?.state !== "waiting") return;
+    const timer = window.setInterval(() => void refreshCodex(), 2_000);
     return () => window.clearInterval(timer);
-  }, [figmaStatuses.codex.authFlow?.state, refreshFigma]);
+  }, [codexStatus?.authFlow?.state, refreshCodex]);
 
+  // 질문용 Codex 상태는 명령을 실행하므로 Figma 화면에 들어올 때 한 번만 확인한다.
   useEffect(() => {
-    if (figmaOptions.transport !== "plugin") return;
-    const timer = window.setInterval(() => void refreshFigma("plugin"), 2_000);
+    if (route.provider === "figma" && !codexStatus) void refreshCodex().catch(() => undefined);
+  }, [route.provider, codexStatus, refreshCodex]);
+
+  // 페어링과 메타데이터 연결은 플러그인·다른 창에서 일어나므로 Figma 화면에 있는 동안 상태를 따라간다.
+  useEffect(() => {
+    if (route.provider !== "figma") return;
+    const timer = window.setInterval(() => void refreshFigma(), 2_000);
     return () => window.clearInterval(timer);
-  }, [figmaOptions.transport, refreshFigma]);
+  }, [route.provider, refreshFigma]);
 
   useEffect(() => {
     const onPopState = () => startTransition(() => setRoute(routeFromPath()));
@@ -319,13 +307,40 @@ export default function App() {
     }
   };
 
-  const runFigma = async (mode: "live" | "demo") => {
+  const scanScreens = async () => {
+    setScreenScanning(true);
+    setScreenScanError(undefined);
+    try {
+      const scanned = await scanFigmaScreens();
+      // 반복만 됐을 뿐 화면으로 찍힐 프레임이 없는 크기는 고를 이유가 없어 목록과 추출 요청에서 모두 뺀다.
+      const proposal = { ...scanned, devices: scanned.devices.filter((device) => device.screens > 0) };
+      setScreenProposal(proposal);
+      // 빠뜨리는 쪽보다 더 잡는 쪽이 운영자 눈에 띄기 쉽다. 모든 후보를 켠 채 보여 주고 끄게 한다.
+      setSelectedScreenDevices(proposal.devices.map(deviceKey));
+      void refreshFigma();
+    } catch (error) {
+      setScreenScanError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setScreenScanning(false);
+    }
+  };
+
+  const toggleScreenDevice = (key: string) => {
+    setSelectedScreenDevices((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key]);
+  };
+
+  const runFigma = async () => {
     figmaController.current?.abort();
     const controller = new AbortController();
     figmaController.current = controller;
     setFigmaEvents([]); setFigmaSelectedId(undefined); setFigmaError(undefined); setFigmaRunning(true);
     try {
-      await streamFigmaExtraction({ ...figmaOptions, mode }, (event) => {
+      const pageRun = figmaOptions.scope === "current_page" && screenProposal;
+      await streamFigmaExtraction({
+        ...figmaOptions,
+        screenDevices: pageRun ? screenProposal.devices.filter((device) => selectedScreenDevices.includes(deviceKey(device))) : undefined,
+        screenPageId: pageRun ? screenProposal.pageId : undefined,
+      }, (event) => {
         setFigmaEvents((current) => upsertEvent(current, event));
         setFigmaSelectedId((current) => current ?? event.id);
       }, controller.signal);
@@ -334,7 +349,7 @@ export default function App() {
     } finally {
       if (!controller.signal.aborted) {
         setFigmaRunning(false);
-        if (figmaOptions.transport === "codex") void refreshFigma("codex");
+        void refreshFigma();
       }
     }
   };
@@ -347,7 +362,7 @@ export default function App() {
     try {
       const question = questionOverride?.trim() || figmaOptions.question?.trim() || "";
       if (questionOverride) setFigmaOptions((current) => ({ ...current, question }));
-      await streamFigmaQuestion({ ...figmaOptions, mode: "live", question }, (event) => {
+      await streamFigmaQuestion({ ...figmaOptions, question }, (event) => {
         setFigmaEvents((current) => upsertEvent(current, event));
         setFigmaSelectedId((current) => current ?? event.id);
       }, controller.signal);
@@ -356,7 +371,7 @@ export default function App() {
     } finally {
       if (!controller.signal.aborted) {
         setFigmaRunning(false);
-        void refreshFigma(figmaOptions.transport);
+        void refreshFigma();
       }
     }
   };
@@ -390,18 +405,7 @@ export default function App() {
     }
   };
 
-  const changeFigmaTransport = (transport: FigmaTransport) => {
-    setFigmaOptions((current) => ({
-      ...current,
-      transport,
-      scope: transport === "plugin" ? current.scope : "node",
-      targetMode: transport !== "desktop" && current.targetMode === "selection" ? "link" : current.targetMode,
-      includeLibraries: transport === "remote" || transport === "codex" ? current.includeLibraries : false,
-      includeAssets: transport !== "desktop" ? current.includeAssets : false,
-    }));
-  };
-
-  const activeFigmaStatus = figmaStatuses[figmaOptions.transport];
+  const activeFigmaStatus = figmaStatus;
   const slackReady = slackOptions.mode === "export"
     ? true
     : slackOptions.mode === "web" ? slackStatus.web?.connected === true : slackStatus.connected;
@@ -415,7 +419,7 @@ export default function App() {
           ? slackStatus.web?.connected ? `Slack 토큰 연결됨 (${slackStatus.web.teamName ?? slackStatus.web.teamId ?? "워크스페이스"})` : "Slack 토큰 연결 안 됨"
           : slackStatus.connected ? "Slack MCP 연결됨" : "Slack 연결 안 됨"
       : activeConnected
-        ? route.provider === "notion" ? `${notionStatus.identity?.workspace?.name ?? "Notion"} 연결됨` : `${figmaOptions.transport === "desktop" ? "Desktop" : figmaOptions.transport === "remote" ? "Remote" : figmaOptions.transport === "plugin" ? "Plugin" : "Codex"} 준비됨`
+        ? route.provider === "notion" ? `${notionStatus.identity?.workspace?.name ?? "Notion"} 연결됨` : "Figma Plugin 준비됨"
         : "연결 안 됨";
   const motionProps = reducedMotion
     ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 }, transition: { duration: 0.16 } }
@@ -443,7 +447,7 @@ export default function App() {
       <AnimatePresence initial={false} mode="popLayout">
         <motion.div className="route-surface" key={`${route.provider}-${route.view}`} {...motionProps}>
           {route.view === "tools" ? (
-            route.provider === "notion" ? <ToolsGuide status={notionStatus} /> : route.provider === "figma" ? <FigmaToolsGuide statuses={figmaStatuses} transport={figmaOptions.transport} onTransportChange={changeFigmaTransport} /> : <SlackToolsGuide status={slackStatus} />
+            route.provider === "notion" ? <ToolsGuide status={notionStatus} /> : route.provider === "figma" ? <FigmaToolsGuide status={figmaStatus} /> : <SlackToolsGuide status={slackStatus} />
           ) : route.provider === "notion" ? (
             <>
               <NotionStage />
@@ -464,7 +468,7 @@ export default function App() {
               <FigmaHistoryCard events={figmaEvents} />
               {figmaError ? <div className="page-error" role="alert">{figmaError}</div> : null}
               <main className="workspace figma-workspace">
-                <aside className="setup-column"><FigmaConnectionPanel statuses={figmaStatuses} transport={figmaOptions.transport} onTransportChange={changeFigmaTransport} onRefresh={refreshFigma} onOAuth={async () => window.location.assign(await startFigmaOAuth())} onDisconnect={async () => { await disconnectFigmaRemote(); await refreshFigma("remote"); setFigmaEvents([]); }} onCodexLogin={startCodexLogin} onCodexFigmaOAuth={startCodexFigmaOAuth} onCodexCancel={cancelCodexAuth} onPluginPair={startPluginPairing} onPluginDisconnect={disconnectFigmaPlugin} onRestPat={connectFigmaRestPat} onRestDisconnect={disconnectFigmaRest} busy={figmaRunning || statusLoading} /><FigmaTargetPanel options={figmaOptions} onChange={setFigmaOptions} onRun={(mode) => void runFigma(mode)} onAsk={(question) => void askFigma(question)} running={figmaRunning} connected={activeFigmaStatus.connected} metadataConnected={figmaStatuses.plugin.restOAuth?.connected === true} /></aside>
+                <aside className="setup-column"><FigmaConnectionPanel status={figmaStatus} codex={codexStatus} onRefresh={refreshFigma} onCodexRefresh={refreshCodex} onCodexLogin={startCodexLogin} onCodexCancel={cancelCodexLogin} onPluginPair={startPluginPairing} onPluginDisconnect={async () => { await disconnectFigmaPlugin(); setScreenProposal(undefined); }} onRestPat={connectFigmaRestPat} onRestDisconnect={disconnectFigmaRest} busy={figmaRunning || statusLoading || screenScanning} /><FigmaTargetPanel options={figmaOptions} onChange={setFigmaOptions} onRun={() => void runFigma()} onAsk={(question) => void askFigma(question)} running={figmaRunning} connected={figmaStatus.connected} metadataConnected={figmaStatus.restOAuth?.connected === true} proposal={screenProposal} scanning={screenScanning} scanError={screenScanError} selectedDevices={selectedScreenDevices} onScan={() => void scanScreens()} onToggleDevice={toggleScreenDevice} /></aside>
                 <ExtractionTimeline events={figmaEvents} selectedId={figmaSelected?.id} onSelect={(event) => setFigmaSelectedId(event.id)} running={figmaRunning} provider="figma" footer={<ExportActions provider="figma" runId={figmaComplete?.runId} />} />
                 <DataInspector event={figmaSelected} />
               </main>
@@ -503,7 +507,7 @@ export default function App() {
         </motion.div>
       </AnimatePresence>
 
-      <footer><p>인증 정보와 원시 응답은 영구 저장하지 않습니다. 실제 추출은 읽기 전용입니다.</p><div>{route.provider === "notion" ? <><a href="https://developers.notion.com/guides/mcp/build-mcp-client" target="_blank" rel="noreferrer">Notion MCP 연결</a><a href="https://developers.notion.com/guides/mcp/mcp-supported-tools" target="_blank" rel="noreferrer">지원 Tool</a></> : route.provider === "figma" ? <><a href="https://developers.figma.com/docs/figma-mcp-server/tools-and-prompts/" target="_blank" rel="noreferrer">Figma Tool</a><a href="https://developers.figma.com/docs/figma-mcp-server/local-server-installation/" target="_blank" rel="noreferrer">Desktop 설정</a></> : <><a href="https://docs.slack.dev/ai/slack-mcp-server" target="_blank" rel="noreferrer">Slack MCP</a><a href="https://slack.com/help/articles/201658943-Export-your-workspace-data" target="_blank" rel="noreferrer">Export 안내</a></>}</div></footer>
+      <footer><p>인증 정보와 원시 응답은 영구 저장하지 않습니다. 실제 추출은 읽기 전용입니다.</p><div>{route.provider === "notion" ? <><a href="https://developers.notion.com/guides/mcp/build-mcp-client" target="_blank" rel="noreferrer">Notion MCP 연결</a><a href="https://developers.notion.com/guides/mcp/mcp-supported-tools" target="_blank" rel="noreferrer">지원 Tool</a></> : route.provider === "figma" ? <><a href="https://www.figma.com/plugin-docs/" target="_blank" rel="noreferrer">Figma Plugin API</a></> : <><a href="https://docs.slack.dev/ai/slack-mcp-server" target="_blank" rel="noreferrer">Slack MCP</a><a href="https://slack.com/help/articles/201658943-Export-your-workspace-data" target="_blank" rel="noreferrer">Export 안내</a></>}</div></footer>
     </div>
   );
 }

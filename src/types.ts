@@ -63,10 +63,11 @@ export type ToolDescriptor = {
   inputSchema?: unknown;
 };
 
-export type FigmaTransport = "desktop" | "remote" | "codex" | "plugin";
+/** Figma 추출은 개발 플러그인만 쓴다. */
+export type FigmaTransport = "plugin";
 
+/** 노드 질문에 쓰는 로컬 Codex CLI의 기기 로그인 진행 상태. */
 export type CodexAuthFlow = {
-  kind: "codex" | "figma";
   state: "waiting" | "complete" | "error";
   authUrl?: string;
   userCode?: string;
@@ -74,39 +75,61 @@ export type CodexAuthFlow = {
   startedAt: number;
 };
 
+export type CodexCliStatus = {
+  installed: boolean;
+  version?: string;
+  authenticated: boolean;
+  authFlow?: CodexAuthFlow;
+  message?: string;
+};
+
 export type FigmaConnectionStatus = {
   connected: boolean;
-  transport: FigmaTransport;
-  beta?: boolean;
-  tools?: ToolDescriptor[];
-  identity?: unknown;
+  transport?: FigmaTransport;
   message?: string;
-  codex?: { installed: boolean; version?: string; authenticated: boolean };
-  figmaMcp?: { configured: boolean; enabled: boolean; authenticated: boolean; authStatus?: string; url?: string };
-  authFlow?: CodexAuthFlow;
   plugin?: {
     connected: boolean;
     lastSeenAt?: string;
-    meta?: { pluginVersion: string; editorType: "figma" | "figjam"; fileKey?: string; fileName?: string; pageName?: string; user?: { id?: string | null; name?: string } };
+    meta?: { pluginVersion: string; editorType: "figma" | "figjam"; fileKey?: string; fileName?: string; pageId?: string; pageName?: string; user?: { id?: string | null; name?: string } };
   };
   restOAuth?: { connected: boolean; userId?: string; message?: string; authKind?: "oauth" | "pat" };
 };
 
+/** 화면으로 볼 프레임 크기 하나. 플러그인이 파일에서 찾아 제안하고 운영자가 고른다. */
+export type FigmaScreenDevice = {
+  device: string;
+  width?: number;
+  height?: number;
+  minWidth: number;
+  maxWidth: number;
+  minHeight: number;
+  maxHeight?: number;
+  /** name: 기기 이름이 붙은 프레임, repeat: 이름 없이 3번 이상 반복된 프레임 크기, default: 근거가 없어 쓴 모바일 기본 범위 */
+  source: "name" | "repeat" | "default";
+  examples: string[];
+  screens: number;
+};
+
+export type FigmaScreenProposal = {
+  fileKey: string;
+  fileName?: string;
+  pageId: string;
+  pageName: string;
+  nodeCount: number;
+  devices: FigmaScreenDevice[];
+  ignoredDevices: Array<{ device: string; width?: number; height?: number; examples: string[]; reason: string }>;
+  screens: number;
+  groups: number;
+};
+
 export type FigmaExtractionOptions = {
   target: string;
-  targetMode: "link" | "selection";
   scope: "node" | "current_page";
-  transport: FigmaTransport;
-  includeVariables: boolean;
-  includeCodeConnect: boolean;
-  includeMotion: boolean;
-  includeLibraries: boolean;
-  includeAssets: boolean;
-  clientFrameworks: string;
-  clientLanguages: string;
-  codeConnectLabel?: string;
   question?: string;
-  mode: "live" | "demo";
+  /** 현재 페이지 추출에서 확인 화면에서 고른 화면 크기. */
+  screenDevices?: FigmaScreenDevice[];
+  /** screenDevices를 찾은 페이지. 플러그인이 다른 페이지를 열고 있으면 추출을 거부한다. */
+  screenPageId?: string;
 };
 
 export type SlackWebStatus = {

@@ -1,13 +1,14 @@
 import type {
   ConnectionStatus,
   CodexAuthFlow,
+  CodexCliStatus,
   ExtractionEvent,
   ExtractionOptions,
   FigmaConnectionStatus,
   FigmaExtractionOptions,
   FigmaRunPayload,
+  FigmaScreenProposal,
   PluginPairing,
-  FigmaTransport,
   Provider,
   SlackConnectionStatus,
   SlackWebStatus,
@@ -108,19 +109,9 @@ export function streamExtraction(
   return streamNdjson("/api/notion/extract/stream", options, onEvent, signal);
 }
 
-export async function getFigmaStatus(transport: FigmaTransport): Promise<FigmaConnectionStatus> {
-  const response = await fetch(`/api/figma/status?transport=${transport}`, { credentials: "same-origin" });
+export async function getFigmaStatus(): Promise<FigmaConnectionStatus> {
+  const response = await fetch("/api/figma/status", { credentials: "same-origin" });
   return readJson<FigmaConnectionStatus>(response);
-}
-
-export async function startFigmaOAuth(): Promise<string> {
-  const response = await mutate("/api/figma/auth/start", { method: "POST" });
-  return (await readJson<{ authUrl: string }>(response)).authUrl;
-}
-
-export async function disconnectFigmaRemote(): Promise<void> {
-  const response = await mutate("/api/figma/auth/logout", { method: "POST" });
-  if (!response.ok) throw new Error("Figma Remote 연결 해제에 실패했습니다.");
 }
 
 export async function startPluginPairing(): Promise<PluginPairing> {
@@ -152,19 +143,26 @@ export async function disconnectFigmaRest(): Promise<void> {
   if (!response.ok) throw new Error("Figma REST 연결 해제에 실패했습니다.");
 }
 
+/** 노드 질문에 쓰는 로컬 Codex CLI 상태. 명령을 실행하므로 필요할 때만 부른다. */
+export async function getCodexStatus(): Promise<CodexCliStatus> {
+  const response = await fetch("/api/figma/codex/status", { credentials: "same-origin" });
+  return readJson<CodexCliStatus>(response);
+}
+
 export async function startCodexLogin(): Promise<CodexAuthFlow> {
   const response = await mutate("/api/figma/codex/auth/start", { method: "POST" });
   return (await readJson<{ flow: CodexAuthFlow }>(response)).flow;
 }
 
-export async function startCodexFigmaOAuth(): Promise<CodexAuthFlow> {
-  const response = await mutate("/api/figma/codex/figma/start", { method: "POST" });
-  return (await readJson<{ flow: CodexAuthFlow }>(response)).flow;
+export async function cancelCodexLogin(): Promise<void> {
+  const response = await mutate("/api/figma/codex/auth/cancel", { method: "POST" });
+  if (!response.ok) throw new Error("Codex 로그인 취소에 실패했습니다.");
 }
 
-export async function cancelCodexAuth(): Promise<void> {
-  const response = await mutate("/api/figma/codex/auth/cancel", { method: "POST" });
-  if (!response.ok) throw new Error("Codex 인증 취소에 실패했습니다.");
+/** 현재 페이지에서 화면으로 볼 프레임 크기 후보를 이미지 없이 계산한다. 추출 전 확인 화면용. */
+export async function scanFigmaScreens(): Promise<FigmaScreenProposal> {
+  const response = await mutate("/api/figma/screens/scan", { method: "POST" });
+  return readJson<FigmaScreenProposal>(response);
 }
 
 export function streamFigmaExtraction(

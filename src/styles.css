@@ -538,3 +538,37 @@ footer div { display: flex; gap: 18px; }
   :root { --line: #757b88; }
   .site-header, .panel, .trace, .inspector, .provider-stage, .event-card { border-width: 2px; }
 }
+
+/* 현재 페이지 추출 전 화면 크기 확인. 무엇이 화면으로 찍힐지 추출 전에 보이게 한다. */
+.screen-review { margin-bottom: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.screen-review-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.screen-review-head strong { display: block; font-size: 11px; }
+.screen-review-head p { margin: 3px 0 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.screen-review-head .secondary-button { flex: 0 0 auto; padding: 7px 10px; font-size: 10px; }
+.screen-review-meta { margin: 10px 0 6px; color: var(--muted); font-size: 9px; }
+.screen-review-meta b { color: var(--graphite); }
+.screen-review-empty { margin: 10px 0 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.screen-size-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.screen-size-list label { display: grid; grid-template-columns: auto auto 1fr auto; align-items: center; gap: 7px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 8px; background: white; cursor: pointer; }
+.screen-size-list label:hover { border-color: #a99ddd; }
+.screen-size-list li.off label { background: #f3f4f7; }
+.screen-size-list li.off .screen-size-main strong, .screen-size-list li.off .screen-size-count { color: var(--muted); text-decoration: line-through; }
+.screen-size-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 6px; overflow-wrap: anywhere; }
+.screen-size-dim { color: var(--muted); font: 500 9px/1.3 var(--mono); }
+.screen-review-ignored .screen-size-dim { margin-left: 5px; }
+.screen-size-list input { accent-color: var(--figma); margin: 0; }
+.screen-size-main { min-width: 0; display: grid; gap: 1px; }
+.screen-size-main strong { color: var(--graphite); font-size: 12px; font-weight: 700; line-height: 1.3; }
+.screen-size-main small { overflow: hidden; color: var(--muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.screen-size-count { color: var(--graphite); font: 700 10px/1 var(--mono); }
+.source-badge { padding: 3px 6px; border-radius: 10px; font: 700 8px/1 var(--mono); }
+.source-badge.name { color: #4d3aa4; background: #ebe7fb; }
+.source-badge.repeat { color: #7a4d0c; background: #f6ead7; }
+.source-badge.default { color: #6f554f; background: #f6e7e4; }
+.screen-review-total { margin: 8px 0 0; color: var(--graphite); font-size: 10px; }
+.screen-review-total b { color: var(--figma); }
+.screen-review-ignored { margin-top: 8px; }
+.screen-review-ignored summary { cursor: pointer; color: var(--muted); font-size: 9px; font-weight: 700; }
+.screen-review-ignored ul { margin: 6px 0 0; padding-left: 14px; display: grid; gap: 3px; }
+.screen-review-ignored li { color: var(--muted); font-size: 9px; line-height: 1.45; }
+.codex-question-box summary small { color: var(--muted); font-weight: 600; }

@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inspectCodexBridge } from "./codex-figma-bridge.js";
+import { inspectCodexCli } from "./codex-cli.js";
 import { codexQuestionFailureMessage } from "./codex-errors.js";
 import type { DesignContextPackage, FigmaQuestionAnswer, StoredArtifact } from "./types.js";
 
@@ -97,9 +97,9 @@ export async function runPluginCodexQuestion(
   artifacts: Map<string, StoredArtifact>,
   signal?: AbortSignal,
 ): Promise<FigmaQuestionAnswer> {
-  const status = await inspectCodexBridge();
-  if (!status.codex.installed) throw new Error("질문하려면 Codex CLI가 필요합니다.");
-  if (!status.codex.authenticated) throw new Error("질문하려면 Codex 계정 로그인이 필요합니다.");
+  const status = await inspectCodexCli();
+  if (!status.installed) throw new Error("질문하려면 Codex CLI가 필요합니다.");
+  if (!status.authenticated) throw new Error("질문하려면 Codex 계정 로그인이 필요합니다.");
   const model = process.env.CODEX_BRIDGE_MODEL ?? "gpt-5.5";
   const work = await mkdtemp(path.join(tmpdir(), "mcp-trace-question-"));
   try {

@@ -8,8 +8,8 @@ Notion·Figma·Slack의 원문 추출, Tool 입력, 원시 응답, 소요 시간
 
 - `/notion`: Notion 계정 연결, 페이지·데이터베이스 추출 타임라인
 - `/notion/tools`: Notion MCP Tool 지도와 워크스페이스별 가용 상태
-- `/figma`: Figma Desktop/Remote/Codex Bridge/개발 Plugin 연결, Design·FigJam 노드 추출과 근거 기반 질문
-- `/figma/tools`: Desktop/Remote/Codex/Plugin 및 파일 유형별 Figma 읽기 경로 지도
+- `/figma`: Figma 개발 Plugin 연결, 노드 추출, 화면 크기를 확인한 뒤 현재 페이지 추출, 근거 기반 노드 질문
+- `/figma/tools`: Plugin이 읽는 단계와 결과가 번들의 어디에 저장되는지 보여 주는 안내
 - `/slack`: 개인 토큰으로 채널 하나 추출, 공식 Export ZIP 정규화, 사용자 범위 Slack MCP 조회
 - `/slack/tools`: 관리자 Export와 Slack MCP 역할·Tool 지도
 - `/`와 기존 `/tools`는 각각 `/notion`, `/notion/tools`로 이동합니다.
@@ -19,9 +19,8 @@ Notion·Figma·Slack의 원문 추출, Tool 입력, 원시 응답, 소요 시간
 - Node.js `22.x` 권장 (`20.19.0` 이상 지원)
 - npm `10.x` 이상 권장
 - Notion 실제 추출: 접근 가능한 Notion 계정 또는 개인 토큰
-- Figma Desktop 추출: 최신 Figma 데스크톱 앱과 Dev Mode MCP 서버
-- Figma Codex Bridge 추출: 로그인된 Codex Desktop 또는 `codex` CLI와 Codex에 등록된 Figma MCP
-- Figma Plugin 추출: Figma Desktop과 직접 설치한 `plugins/figma-trace/manifest.json`
+- Figma 추출: Figma Desktop과 직접 설치한 `plugins/figma-trace/manifest.json`. Figma 추출은 이 개발 Plugin만 씁니다
+- Figma 노드 질문(선택): 로그인된 Codex Desktop 또는 `codex` CLI
 - 최근 버전 비교: 내부 Figma OAuth App과 배포된 `oauth-broker/` Vercel Function
 
 ```bash
@@ -49,7 +48,7 @@ ZIP 사용자는 [내부 파일럿 시작 안내](PILOT-START.md)에 따라 macO
 - Figma: http://127.0.0.1:5173/figma
 - API: http://127.0.0.1:8787/api/health
 
-연결 없이 UI와 전체 추출 흐름을 먼저 확인하려면 `/figma`의 `Design 예제로 전체 여정 보기` 또는 `/notion`의 `26행 예제로 먼저 보기`를 누릅니다. 예제 응답은 실제 MCP 실행과 섞이지 않습니다.
+연결 없이 Notion 추출 흐름을 먼저 확인하려면 `/notion`의 `26행 예제로 먼저 보기`를 누릅니다. 예제 응답은 실제 MCP 실행과 섞이지 않습니다.
 
 프로덕션 빌드는 API 서버가 `dist`의 Web 파일도 함께 제공합니다.
 
@@ -81,66 +80,48 @@ Notion 모드는 OAuth 또는 개인 토큰을 지원합니다. 토큰은 브라
 
 ## Figma 연결
 
-### Desktop MCP
+Figma 추출은 **개발 Plugin 한 가지 경로**만 씁니다. Desktop MCP, Remote MCP, Codex Bridge 경로는 제거했습니다. 프로젝트 루트에서 `npm run build:plugin`을 실행하고 [개발 플러그인 안내](plugins/figma-trace/README.md)에 따라 manifest를 Figma Desktop에 가져옵니다.
 
-1. Figma 데스크톱 앱에서 Design 또는 FigJam 파일을 엽니다.
-2. Dev Mode로 전환합니다.
-3. Inspect 패널의 MCP 서버를 켭니다.
-4. `/figma`에서 `Desktop MCP 다시 확인`을 누릅니다.
-
-서버는 `http://127.0.0.1:3845/mcp`에 직접 연결합니다. 노드 링크와 Figma 앱의 현재 선택을 모두 지원합니다.
-
-Desktop MCP는 브라우저가 아니라 이 프로젝트의 API 서버에서 `127.0.0.1:3845`로 연결합니다. 따라서 실제 Desktop 추출은 Figma 앱과 API 서버를 같은 컴퓨터에서 실행해야 합니다.
-
-### Remote MCP beta
-
-Remote는 `https://mcp.figma.com/mcp`의 OAuth 흐름을 사용합니다. Figma의 승인 클라이언트 정책에 따라 이 독립 클라이언트의 인증이 제한될 수 있으며, 실패해도 Desktop 모드는 계속 사용할 수 있습니다.
-
-연결 후 `whoami` Tool이 제공되면 계정·플랜·seat 응답도 추적합니다. Remote는 링크 기반이며 현재 선택 모드는 지원하지 않습니다.
-
-### Codex Bridge beta
-
-Codex Bridge는 Figma가 승인한 Codex의 Figma OAuth 연결을 로컬 `codex` CLI를 통해 사용합니다. 독립 Remote 클라이언트 등록이 거부되는 환경에서 선택할 수 있는 별도 모드입니다.
-
-1. `/figma`에서 `Codex β`를 선택합니다.
-2. Codex 로그인이 필요하면 `Codex 기기 로그인 시작`을 누르고 공식 기기 인증 화면에서 완료합니다.
-3. `Figma OAuth 시작`을 누르고 Figma 공식 승인 화면에서 완료합니다.
-4. Figma 노드 링크를 입력하고 `Codex를 통해 읽기`를 누릅니다.
-
-앱은 Codex 비밀번호, API key, Figma token을 입력받지 않습니다. 인증 URL과 기기 코드만 화면에 표시하며 자격 증명은 Codex가 관리합니다. Codex에 Figma MCP가 없다면 다음 명령으로 추가할 수 있습니다.
-
-```bash
-codex mcp add figma --url https://mcp.figma.com/mcp
-```
-
-이 모드는 직접 MCP 클라이언트가 아닙니다. 읽기 전용 고정 프롬프트로 Codex를 실행하고 `codex exec --json`의 Figma Tool 이벤트를 추적하므로 `origin: "codex"`로 기록합니다. 따라서 직접 MCP content block과 달라질 수 있으며 Codex의 모델·Skill 실행 경로를 포함합니다. Desktop과 독립 Remote 모드는 계속 `origin: "mcp"`인 직접 원시 추적입니다.
-
-Codex의 `get_screenshot`이 짧은 수명의 Figma `image_url`을 반환하면 서버가 즉시 이미지를 내려받아 실행 artifact로 보관합니다. 인스펙터의 `시각 자료` 탭에서 미리볼 수 있으며 ZIP의 `artifacts/screenshots/`에도 포함됩니다. 기존 실행처럼 URL만 남아 있는 동안에는 같은 탭에서 임시 미리보기를 제공합니다.
-
-### Plugin Bridge
-
-일반 사용자에게 Desktop MCP 토글이 보이지 않는 환경을 위한 내부 파일럿 연결입니다. 프로젝트 루트에서 `npm run build:plugin`을 실행하고 [개발 플러그인 안내](plugins/figma-trace/README.md)에 따라 manifest를 Figma Desktop에 가져옵니다.
-
-1. `/figma`에서 `Plugin`을 선택하고 6자리 페어링 코드를 만듭니다.
+1. `/figma`에서 6자리 페어링 코드를 만듭니다.
 2. 열린 Design 또는 FigJam 파일에서 개발 플러그인을 실행하고 코드를 입력합니다.
-3. 추출할 프레임이나 레이어를 선택하고 macOS는 `Command L`, Windows는 `Ctrl L`을 누릅니다. 우클릭 메뉴의 `Copy/Paste as → Copy link to selection`을 사용해도 됩니다.
-4. `노드 추출`은 복사한 `node-id` 포함 링크를 입력합니다. `현재 페이지 추출`은 링크 없이 Figma에서 열어 둔 페이지를 사용합니다.
-5. `Figma 개인 액세스 토큰으로 연결`에 토큰을 붙여넣어 파일 메타데이터 연결을 완료합니다.
+3. `Figma 개인 액세스 토큰으로 연결`에 토큰을 붙여넣어 파일 메타데이터 연결을 완료합니다.
+4. `노드 추출`은 프레임이나 레이어를 선택한 뒤 macOS는 `Command L`, Windows는 `Ctrl L`로 복사한 `node-id` 포함 링크를 입력합니다. 우클릭 메뉴의 `Copy/Paste as → Copy link to selection`을 사용해도 됩니다.
+5. `현재 페이지 추출`은 링크 없이 Figma에서 열어 둔 페이지를 사용합니다. 아래 확인 화면을 거칩니다.
 
-NH Plugin 추출에서는 REST 인증이 필수입니다. Figma 계정 메뉴의 `Settings → Security → Personal access tokens`에서 만료와 scope를 지정해 토큰을 발급하고 Trace Studio에 붙여넣습니다. 필요한 scope는 `current_user:read`, `file_content:read`, `file_metadata:read`, `file_comments:read`, `file_versions:read`이며 파일 생성자·최근 수정자·전체 댓글·버전 작성자 원문을 ZIP의 `metadata/`에 보존합니다. 토큰은 브라우저 저장소나 파일에 기록하지 않고 API 서버 세션 메모리에만 둡니다. 버전 작성자는 버전 생성자이며 개별 클릭이나 노드 변경의 정확한 작성자로 단정하지 않습니다.
+메타데이터 연결은 필수입니다. Figma 계정 메뉴의 `Settings → Security → Personal access tokens`에서 만료와 scope를 지정해 토큰을 발급합니다. 필요한 scope는 `current_user:read`, `file_content:read`, `file_metadata:read`, `file_comments:read`, `file_versions:read`이며 파일 생성자·최근 수정자·전체 댓글·버전 작성자 원문을 ZIP의 `metadata/`에 보존합니다. 토큰은 브라우저 저장소나 파일에 기록하지 않고 API 서버 세션 메모리에만 둡니다. 버전 작성자는 버전 생성자이며 개별 클릭이나 노드 변경의 정확한 작성자로 단정하지 않습니다.
 
-현재 페이지 추출은 페이지를 최상위 프레임 단위로 나눠 `nodes/*.json`, `screenshots/*.png`, `assets/*`로 전송하고, 프레임 하나가 파트 예산을 넘으면 다시 서브트리 조각으로 나눕니다. 제한을 넘거나 렌더링할 수 없는 프레임은 `page.json`에 `partial`, `omittedNodes`, `error`를 남기며 완전한 결과처럼 표시하지 않습니다. 에셋 회계는 `page.json`의 `assets`에 `stored`·`deduplicated`·`omitted`로 남습니다.
-
-페어링 코드는 5분 동안 유효하고 세션 토큰은 플러그인 메모리에만 남습니다. 연결되면 플러그인 창은 캔버스를 덜 가리도록 `280×176`으로 자동 축소됩니다. 다음 요청을 받으려면 창을 열어 둬야 하며, `X`로 닫으면 다시 열고 새 코드로 페어링해야 합니다. 이미 Trace Studio가 받은 실행 결과는 닫아도 유지되지만 `노드 추출 중` 또는 `결과 전송 중`에는 닫지 마세요.
+페어링 코드는 5분 동안 유효하고 세션 토큰은 플러그인 메모리에만 남습니다. 연결되면 플러그인 창은 캔버스를 덜 가리도록 자동 축소됩니다. 다음 요청을 받으려면 창을 열어 둬야 하며, `X`로 닫으면 다시 열고 새 코드로 페어링해야 합니다. 이미 받은 실행 결과는 닫아도 유지되지만 `노드 추출 중` 또는 `결과 전송 중`에는 닫지 마세요.
 
 file key가 다르거나 노드가 없으면 artifact를 보내기 전에 중단합니다. 사용자가 실행한 순간만 읽으며 지속적인 변경 감시는 하지 않습니다.
 
+### 현재 페이지 추출과 화면 크기 확인
+
+현재 페이지 추출은 최상위 프레임 PNG(페이지 배치도)와 함께 **화면 단위 이미지**를 만듭니다. 어떤 프레임을 "화면"으로 볼지는 추출 전에 운영자가 확인합니다.
+
+1. `화면 크기 후보 찾기`를 누르면 플러그인이 이미지를 찍지 않고 후보만 계산합니다.
+   - **이름**: 이름에 `Mobile`·`Tablet`·`Fold`·`Desktop`(한글 포함)이 붙은 프레임의 크기. 다른 화면 안에 있는 같은 이름 프레임(예: 접기 카드 `Fold`)은 컴포넌트로 보고 제외합니다.
+   - **반복**: 이름은 없지만 이름으로 찾은 화면 밖에서 같은 크기(±8px)의 **프레임**이 3번 이상 나오는 크기(예: 미니모드 360×600 창). 패널·팝업·위젯은 주로 컴포넌트 인스턴스로 쓰이므로 인스턴스는 세지 않습니다. 다른 화면 크기 프레임을 여럿 품은 크기는 기능 묶음으로 보고 제외합니다.
+   - **추정**: 이름도 반복도 없을 때만 폭 360~430·높이 600 이상을 모바일로 봅니다.
+2. 크기별 화면 개수와 예시 이름을 보고 위젯·팝업처럼 화면이 아닌 크기를 끕니다. 제외된 후보와 사유는 접힌 목록에 남습니다.
+3. `선택한 크기로 현재 페이지 ZIP 추출`을 누릅니다. 후보를 찾은 뒤 Figma에서 다른 페이지로 바꿨다면 플러그인이 추출을 거부하고 후보를 다시 찾으라고 안내합니다.
+
+추출되는 이미지는 다음과 같습니다.
+
+| 이미지 | 기준 | 크기 |
+| --- | --- | --- |
+| 화면 | 고른 크기에 맞는 가장 바깥 프레임. 같은 크기의 자식 하나만 감싼 포장 프레임은 벗깁니다 | 2배, 긴 변 8,192px 이하 |
+| 기능 묶음 | 화면을 둘 이상 품은 가장 안쪽 컨테이너. 소속 화면 좌표를 함께 기록 | 긴 변 4,096px 이하 |
+| 페이지 배치도 | 최상위 노드 | 긴 변 2,048px 이하 |
+
+스크린샷은 Figma 화면에서 보이는 그대로 찍습니다. 뷰포트가 가린 스크롤 영역은 이미지로 꺼내지 않으며, 그 내용은 `nodes/`의 노드 JSON에 그대로 있습니다.
+
+페이지를 최상위 프레임 단위로 나눠 `nodes/*.json`, `screenshots/*.png`, `assets/*`로 전송하고, 프레임 하나가 파트 예산을 넘으면 다시 서브트리 조각으로 나눕니다. 제한을 넘거나 렌더링할 수 없는 프레임은 `page.json`에 `partial`, `omittedNodes`, `error`를 남깁니다. 에셋 회계는 `page.json`의 `assets`에 `stored`·`deduplicated`·`omitted`로 남습니다.
+
 ### 노드 질문과 제품 의미 해석
 
-`Codex β`와 `Plugin` 모두 링크 아래 질문 입력과 `최신 정보로 질문`을 제공합니다. `제품 의미 해석`은 제품 역할·핵심 행동·정보 구조를 묻는 준비된 질문을 같은 경로로 실행합니다. 질문마다 최신 노드와 screenshot을 다시 읽고 이전 대화는 이어받지 않습니다.
+노드 추출 화면의 질문 입력과 `최신 정보로 질문`, 준비된 질문을 쓰는 `제품 의미 해석`을 제공합니다. 질문마다 최신 노드와 screenshot을 다시 읽고 이전 대화는 이어받지 않습니다.
 
-- Codex β: Figma MCP 읽기 Tool을 호출한 같은 실행에서 구조화 답변 생성
-- Plugin: Plugin snapshot, 현재 artifact, 최근 최대 5개 버전 diff를 만든 뒤 빈 임시 디렉터리의 읽기 전용 Codex CLI에 전달
+- Plugin snapshot, 현재 artifact, 최근 최대 5개 버전 diff를 만든 뒤 빈 임시 디렉터리의 읽기 전용 Codex CLI에 전달합니다. 연결 패널의 `노드 질문용 Codex 로그인`에서 기기 로그인을 할 수 있습니다. 추출에는 Codex를 쓰지 않습니다.
 - 답변: `answer`, node/version/artifact/tool `evidence`, `uncertainties`, model·prompt version·생성 시각
 
 레이어명·텍스트·주석은 신뢰할 수 없는 근거로 격리합니다. 디자인 안의 명령문은 수행하지 않으며 근거가 부족하면 확인 불가로 답합니다. 버전 작성자 귀속은 클릭 단위 감사 로그가 아니라 `coarse_version_attribution`입니다.
@@ -151,51 +132,13 @@ file key가 다르거나 노드가 없으면 artifact를 보내기 전에 중단
 - Design branch: `https://www.figma.com/design/<base-key>/branch/<branch-key>/...?node-id=1-2`
 - FigJam: `https://www.figma.com/board/<file-key>/...?node-id=1-2`
 
-`node-id`가 없는 파일 전체 링크는 실행하지 않습니다. node ID는 `1-2`와 `1:2` 형식을 모두 받아 MCP 입력용 `1:2`로 정규화합니다. Slides와 Make 링크는 지원하지 않습니다.
-
-### 기본 고급 옵션
-
-| 옵션 | 기본값 | 범위 |
-| --- | --- | --- |
-| 변수와 스타일 | 켬 | `get_variable_defs` |
-| Code Connect | 켬 | `get_code_connect_map` |
-| 하위 모션 | 켬 | `get_motion_context`, `recursive: true` |
-| Remote 라이브러리 | 끔 | Remote의 `get_libraries` |
-| Remote 자산 다운로드 | 끔 | Remote의 `download_assets` |
-| Frameworks / Languages | `unknown` | Tool 입력 힌트 |
-| Code Connect label | 없음 | 입력했을 때만 전달 |
-
-### 파일 유형과 Tool 흐름
-
-노드 링크의 `/design/`·`/board/` 경로로 유형을 감지합니다. Desktop 현재 선택은 Design을 먼저 확인하고 파일 유형 오류일 때 FigJam으로 전환합니다.
-
-Design 기본 흐름:
-
-1. `tools/list`
-2. `get_design_context`
-3. 응답이 너무 크거나 metadata-only일 때 `get_metadata`
-4. `get_screenshot` — 최대 변 2048px
-5. `get_variable_defs`
-6. `get_code_connect_map`
-7. `get_motion_context`
-8. Remote 선택 옵션에 따라 `get_libraries`, `download_assets`
-
-FigJam 기본 흐름:
-
-1. `tools/list`
-2. `get_figjam`
-3. `get_screenshot` — 최대 변 2048px
-4. Remote 선택 옵션에 따라 `download_assets`
-
-Figma Design 예제 모드는 연결 없이 합성 MCP 응답과 screenshot artifact를 재생합니다. FigJam 예제는 제공하지 않습니다.
-
-연결 방식이나 파일 유형에 맞는 Tool이 없으면 호출을 실패시키지 않고 정확한 이유와 함께 `skipped` 이벤트로 남깁니다. 실제 MCP 쓰기 Tool, `use_figma`, 업로드, 생성 Tool은 추출 경로에서 호출하지 않습니다.
+`node-id`가 없는 파일 전체 링크는 실행하지 않습니다. node ID는 `1-2`와 `1:2` 형식을 모두 받아 `1:2`로 정규화합니다. Slides와 Make 링크는 지원하지 않습니다.
 
 ## 원시 응답과 번들
 
 인스펙터는 `원시 응답`을 기본 탭으로 열고 `MCP 입력`, `추출 메타`, `시각 자료`를 함께 제공합니다. 텍스트·JSON·XML content block은 원문을 유지하며 이미지·오디오·resource blob은 base64를 UI에 출력하지 않고 binary artifact로 분리합니다.
 
-요약 값은 노드·변수·매핑·artifact 수, 응답 크기, 잘림과 누락 Tool처럼 결정적으로 계산할 수 있는 정보만 포함합니다. Desktop과 독립 Remote 모드는 AI 해석, Skill 실행, 코드 생성을 수행하지 않습니다. Codex Bridge는 Codex 중계 실행을 포함하며 UI와 번들에서 직접 MCP 추적과 명확히 구분합니다.
+요약 값은 노드·artifact 수, 응답 크기, 잘림과 누락처럼 결정적으로 계산할 수 있는 정보만 포함합니다. Figma 추출은 AI 해석이나 코드 생성을 하지 않으며, 노드 질문만 Codex CLI 답변을 따로 표시합니다.
 
 Figma 실행 결과는 전체 JSON으로 복사하거나 ZIP으로 받을 수 있습니다.
 
@@ -218,7 +161,10 @@ nodes/<top-level-node>/NNN-*.json    나눈 나머지 조각
 metadata/file.json
 metadata/comments.json
 metadata/versions.json
-screenshots/<top-level-frame>.png
+screenshots/<top-level-frame>.png  페이지 배치도
+screens/<기기>/<화면>-<id>.png       화면(2배)
+groups/<묶음>-<id>.png              기능 묶음
+screens.json                        화면·묶음 색인, 학습한 화면 크기, 묶음 위 화면 좌표, 기본 주석
 assets/*
 assets/index.json                    에셋별 사용 노드 목록
 ```
@@ -308,12 +254,10 @@ Notion:
 
 Figma:
 
-- `GET /api/figma/status?transport=desktop|remote|codex|plugin`
-- `POST /api/figma/auth/start`
-- `GET /api/figma/auth/callback`
-- `POST /api/figma/auth/logout`
+- `GET /api/figma/status`
+- `POST /api/figma/screens/scan` — 현재 페이지의 화면 크기 후보(이미지 없이)
+- `GET /api/figma/codex/status` — 노드 질문용 Codex CLI 상태
 - `POST /api/figma/codex/auth/start`
-- `POST /api/figma/codex/figma/start`
 - `POST /api/figma/codex/auth/cancel`
 - `POST /api/figma/plugin/pair/start`
 - `POST /api/figma/plugin/pair/complete`
@@ -356,8 +300,8 @@ Slack:
 | `PORT` | `8787` | Express API 포트 |
 | `API_ORIGIN` | `http://127.0.0.1:8787` | OAuth callback과 API 기준 주소 |
 | `APP_ORIGIN` | 개발 `http://127.0.0.1:5173` | OAuth 뒤 돌아올 Web 주소 |
-| `CODEX_BRIDGE_MODEL` | `gpt-5.5` | Codex Bridge에서 사용할 로컬 Codex 모델 |
-| `CODEX_BRIDGE_REASONING` | `low` | Codex Bridge reasoning effort |
+| `CODEX_BRIDGE_MODEL` | `gpt-5.5` | 노드 질문에 쓰는 로컬 Codex 모델 |
+| `CODEX_BRIDGE_REASONING` | `low` | 노드 질문의 Codex reasoning effort |
 | `FIGMA_REST_BROKER_URL` | 없음 | broker 경유 OAuth를 쓸 때만 필요합니다. 파일럿은 개인 액세스 토큰을 쓰므로 비워 둡니다 |
 
 `oauth-broker/`는 배포하지 않은 대안 경로입니다. Figma REST OAuth는 `client_secret`을 요구하는데 앱이 담당자 PC에서 실행되므로 secret을 그 PC에 둘 수 없어, 코드·토큰 교환만 대신하는 broker가 필요했습니다. 현재는 scope를 지정할 수 있는 개인 액세스 토큰을 쓰므로 외부에 배포하는 구성요소가 없습니다. 조직 정책이 개인 토큰 발급을 막는 경우에만 broker를 배포하고 `FIGMA_REST_CLIENT_ID`, `FIGMA_REST_CLIENT_SECRET`, `BROKER_TICKET_SECRET`, `LOCAL_CALLBACK_ORIGIN`, `BROKER_PUBLIC_ORIGIN`을 등록합니다. 자세한 내용은 [OAuth broker 안내](oauth-broker/README.md)를 봅니다.
@@ -374,9 +318,7 @@ npm --prefix oauth-broker run typecheck
 ## 보안 원칙
 
 - `.env`와 `oauth-broker/.env`는 Git에서 제외합니다. 저장소의 `.env.example`에는 placeholder만 두고 실제 client secret, token, 개인 계정 정보는 커밋하지 않습니다.
-- Notion과 독립 Figma Remote의 연결·실행 상태는 서로 분리하며 토큰은 서버 세션 메모리에만 저장합니다. Codex Bridge 자격 증명은 앱이 읽거나 저장하지 않고 Codex 자체 인증 저장소가 관리합니다.
-- 실제 추출은 읽기 Tool과 읽기 전용 Plugin API로 제한합니다.
-- `use_figma`, 업로드, 파일 생성, Code Connect 쓰기 Tool은 호출하지 않습니다.
-- Codex Bridge는 직접 MCP 원문이 아니라 중계 이벤트이므로 번들의 `transport`와 각 이벤트의 `origin`을 확인하세요.
+- Notion·Figma·Slack의 연결·실행 상태는 서로 분리하며 토큰은 서버 세션 메모리에만 저장합니다. 노드 질문용 Codex 자격 증명은 앱이 읽거나 저장하지 않고 Codex 자체 인증 저장소가 관리합니다.
+- 실제 추출은 읽기 Tool과 읽기 전용 Plugin API로 제한합니다. 플러그인은 노드를 만들거나 수정하지 않습니다.
 - OAuth broker는 PKCE·암호화된 짧은 수명 ticket·로컬 redeem secret으로 코드 교환과 갱신만 수행하며 디자인 원문을 받지 않습니다.
 - 원시 응답에는 비공개 문서와 디자인 정보가 포함될 수 있으므로 ZIP을 외부에 공유하기 전에 확인하세요.
