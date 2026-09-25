@@ -41,9 +41,10 @@ export type NotionTarget = {
   sourceUrl: string;
 };
 
-export type FigmaTransport = "desktop" | "remote" | "codex" | "plugin";
+/** 추출은 Figma 개발 플러그인만 쓴다. 번들 manifest에 출처를 남기려고 필드는 유지한다. */
+export type FigmaTransport = "plugin";
 export type FigmaFileType = "design" | "figjam";
-export type FigmaTargetMode = "link" | "selection";
+export type FigmaTargetMode = "link";
 export type FigmaExtractionScope = "node" | "current_page";
 
 export type FigmaExtractionInput = {
@@ -51,23 +52,11 @@ export type FigmaExtractionInput = {
   targetMode: FigmaTargetMode;
   scope: FigmaExtractionScope;
   transport: FigmaTransport;
-  includeVariables: boolean;
-  includeCodeConnect: boolean;
-  includeMotion: boolean;
-  includeLibraries: boolean;
-  includeAssets: boolean;
-  clientFrameworks: string;
-  clientLanguages: string;
-  codeConnectLabel?: string;
   question?: string;
-  mode: "live" | "demo";
-};
-
-export type FigmaQuestionInput = Omit<FigmaExtractionInput, "mode" | "targetMode"> & {
-  transport: "codex" | "plugin";
-  targetMode: "link";
-  question: string;
-  mode: "live";
+  /** 현재 페이지 추출에서 운영자가 확인 화면에서 고른 화면 크기. */
+  screenDevices?: FigmaPluginDevice[];
+  /** screenDevices를 찾은 페이지. */
+  screenPageId?: string;
 };
 
 export type FigmaTarget = {
@@ -219,6 +208,8 @@ export type FigmaPagePackage = {
   partial: boolean;
   /** 에셋 회계. 번들만 보고도 무엇이 빠졌는지 알 수 있어야 한다. */
   assets?: { stored: number; deduplicated: number; omitted: { cap: number; oversized: number; failed: number; storeRejected: number } };
+  /** 화면·기능 묶음 이미지 요약. 상세는 indexPath의 screens.json에 있다. */
+  screens?: { total: number; byDevice: Record<string, number>; groups: number; failed: number; annotations: number; indexPath: string };
   provenance: Array<{ source: "plugin" | "figma_rest"; detail: string }>;
 };
 
@@ -266,6 +257,12 @@ export type FigmaPluginJobOptions = {
   maxDimension: number;
   maxAssets: number;
   maxAssetBytes: number;
+  /** 이미지 없이 화면 크기 후보만 계산한다. 추출 전 확인 화면용. */
+  scanOnly?: boolean;
+  /** 운영자가 확인 화면에서 고른 화면 크기. 주어지면 플러그인이 스스로 학습하지 않는다. */
+  devices?: FigmaPluginDevice[];
+  /** 확인 화면의 후보를 찾은 페이지. 플러그인이 지금 열린 페이지와 다르면 추출을 거부한다. */
+  expectedPageId?: string;
 };
 
 export type FigmaPluginJob = {
@@ -294,6 +291,84 @@ export type FigmaPluginPageNodeResult = {
   error?: string;
 };
 
+/** 플러그인이 이 파일에서 "화면"으로 본 기기 크기. 이름 붙은 프레임에서 배우고, 없으면 모바일 기본 범위다. */
+export type FigmaPluginDevice = {
+  device: string;
+  width?: number;
+  height?: number;
+  minWidth: number;
+  maxWidth: number;
+  minHeight: number;
+  maxHeight?: number;
+  source: "name" | "repeat" | "default";
+  examples: string[];
+  screens: number;
+  selected?: boolean;
+};
+
+export type FigmaPluginScreen = {
+  nodeId: string;
+  nodeName: string;
+  nodeType: string;
+  device: string;
+  width: number;
+  height: number;
+  path: string[];
+  groupNodeId?: string;
+  slot?: string;
+  scale?: number;
+  /** 프레임 원점이 이미지 안에서 놓인 위치(Figma 단위). 그림자·넘친 내용이 있으면 0이 아니다. */
+  renderOffset?: { x: number; y: number };
+  error?: string;
+};
+
+/** Figma 기본 주석. 노드에 직접 붙어 있으므로 화면·기능 묶음은 조상에서 정해진다. */
+export type FigmaPluginAnnotation = {
+  nodeId: string;
+  nodeName: string;
+  nodeType: string;
+  label?: string;
+  labelMarkdown?: string;
+  categoryId?: string;
+  properties?: string[];
+  screenNodeId?: string;
+  groupNodeId?: string;
+  /** 화면 원점(없으면 묶음 원점, 둘 다 없으면 페이지) 기준 Figma 단위. */
+  rect?: { x: number; y: number; width: number; height: number };
+};
+
+export type FigmaPluginAnnotationCategory = { id: string; label: string; color: string; isPreset: boolean };
+
+export type FigmaPluginIgnoredDevice = { device: string; width?: number; height?: number; examples: string[]; reason: string };
+
+export type FigmaPluginGroup = {
+  nodeId: string;
+  nodeName: string;
+  nodeType: string;
+  path: string[];
+  width: number;
+  height: number;
+  slot?: string;
+  scale?: number;
+  renderOffset?: { x: number; y: number };
+  /** 묶음 원점 기준 Figma 단위. 이미지 픽셀은 (값 + renderOffset) × scale이다. */
+  screens: Array<{ nodeId: string; x: number; y: number; width: number; height: number }>;
+  error?: string;
+};
+
+/** 추출 전 확인 화면에 보여 줄 화면 크기 후보. 플러그인이 이미지 없이 계산한다. */
+export type FigmaScreenProposal = {
+  fileKey: string;
+  fileName?: string;
+  pageId: string;
+  pageName: string;
+  nodeCount: number;
+  devices: FigmaPluginDevice[];
+  ignoredDevices: FigmaPluginIgnoredDevice[];
+  screens: number;
+  groups: number;
+};
+
 export type FigmaPluginExtractionResult = {
   scope: FigmaExtractionScope;
   snapshot?: unknown;
@@ -301,7 +376,7 @@ export type FigmaPluginExtractionResult = {
   partial: boolean;
   omittedNodes?: number;
   meta: FigmaPluginMeta & { nodeId?: string; nodeName?: string; nodeType?: string };
-  page?: { id: string; name: string; nodes: FigmaPluginPageNodeResult[] };
+  page?: { id: string; name: string; nodes: FigmaPluginPageNodeResult[]; devices?: FigmaPluginDevice[]; ignoredDevices?: FigmaPluginIgnoredDevice[]; screens?: FigmaPluginScreen[]; groups?: FigmaPluginGroup[]; annotations?: FigmaPluginAnnotation[]; annotationCategories?: FigmaPluginAnnotationCategory[] };
   /** 담지 못한 에셋의 사유별 개수. 침묵하면 무엇을 잃었는지 알 길이 없다. */
   omittedAssets?: { cap: number; oversized: number; failed: number; duplicate: number };
   artifacts: Array<{ slot: string; kind: ArtifactRef["kind"] | "json"; mimeType: string; name: string; bytes: number; usages?: Array<{ nodeId: string; nodeName: string }> }>;
@@ -426,8 +501,8 @@ export type FigmaRestOAuthSession = {
   userId?: string;
 };
 
+/** 노드 질문에 쓰는 로컬 Codex CLI의 기기 로그인 진행 상태. */
 export type CodexAuthFlow = {
-  kind: "codex" | "figma";
   state: "waiting" | "complete" | "error";
   authUrl?: string;
   userCode?: string;
@@ -435,19 +510,15 @@ export type CodexAuthFlow = {
   startedAt: number;
 };
 
-export type CodexBridgeSession = {
+export type CodexCliSession = {
   flow?: CodexAuthFlow;
   process?: ChildProcess;
-  tools: ToolDescriptor[];
 };
 
-export type CodexBridgeStatus = {
-  connected: boolean;
-  transport: "codex";
-  beta: true;
-  tools?: ToolDescriptor[];
-  codex: { installed: boolean; version?: string; authenticated: boolean };
-  figmaMcp: { configured: boolean; enabled: boolean; authenticated: boolean; authStatus?: string; url?: string };
+export type CodexCliStatus = {
+  installed: boolean;
+  version?: string;
+  authenticated: boolean;
   authFlow?: CodexAuthFlow;
   message?: string;
 };

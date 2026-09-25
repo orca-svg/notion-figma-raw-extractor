@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { strFromU8, strToU8, unzipSync } from "fflate";
 import { buildSemanticHints, diffFigmaSnapshots, groupChangesByActor, loadFigmaHistory } from "../server/figma-history.js";
 import { FigmaPluginBridge } from "../server/figma-plugin-bridge.js";
-import { runPluginFigmaExtraction } from "../server/figma-plugin-extract.js";
+import { runPluginFigmaExtraction, scanPluginScreens } from "../server/figma-plugin-extract.js";
 import { buildFigmaRunZip, createFigmaRun, upsertRunEvent } from "../server/figma-run-store.js";
 import { codexQuestionFailureMessage, normalizeCodexBridgeAnswer } from "../server/figma-question.js";
 import { connectFigmaRestPat, figmaRestOAuthStatus, FigmaRestApiError, figmaRestJson } from "../server/figma-rest-client.js";
@@ -133,16 +133,20 @@ describe("Figma Plugin pairing bridge", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-01T00:00:00Z"));
 
-    // 하트비트가 없으면: 추출 중 플러그인은 아무 요청도 보내지 않고, 화면의 2초 status 폴링이
-    // cleanup을 돌려 35초 만에 연결과 진행 중인 작업을 함께 끊는다. 페이지 추출이 늘 실패하던 경로다.
-    const bare = new FigmaPluginBridge();
-    const bareConnection = connect(bare, "owner-stale");
-    const stalled = bare.requestPageExtraction("owner-stale", target.fileKey, "design");
+    // 큰 페이지는 Figma 메인 스레드가 막혀 하트비트가 수십 초씩 끊긴다. 예전에는 35초 만에 연결과 작업을
+    // 함께 끊었다(노드 8만 개 페이지에서 실제로 실패). 이제 작업 중인 연결은 작업의 무소식 한계만 따른다.
+    const blocked = new FigmaPluginBridge();
+    const blockedConnection = connect(blocked, "owner-blocked");
+    const stalled = blocked.requestPageExtraction("owner-blocked", target.fileKey, "design");
     const settled = stalled.then(() => "완료", (error: Error) => error.message);
-    await bare.nextJob(bareConnection.sessionToken, undefined, 100);
-    vi.advanceTimersByTime(36_000);
-    expect(bare.status("owner-stale").connected).toBe(false);
-    expect(await settled).toMatch(/연결이 만료/);
+    const blockedJob = await blocked.nextJob(blockedConnection.sessionToken, undefined, 100);
+    vi.advanceTimersByTime(60_000);
+    expect(blocked.status("owner-blocked").connected).toBe(true);
+    // 늦게 도착한 하트비트가 작업을 되살린다.
+    blocked.heartbeat(blockedConnection.sessionToken, blockedJob!.id);
+    // 그래도 5분 넘게 소식이 없으면 작업을 포기한다.
+    vi.advanceTimersByTime(5 * 60 * 1000 + 1);
+    expect(await settled).toMatch(/시간이 초과/);
 
     const bridge = new FigmaPluginBridge();
     const connection = connect(bridge);
@@ -179,14 +183,6 @@ describe("Figma Plugin pairing bridge", () => {
       targetMode: "link",
       scope: "node",
       transport: "plugin",
-      includeVariables: true,
-      includeCodeConnect: true,
-      includeMotion: true,
-      includeLibraries: false,
-      includeAssets: true,
-      clientFrameworks: "unknown",
-      clientLanguages: "unknown",
-      mode: "live",
     };
     vi.stubGlobal("fetch", vi.fn(async (request: string | URL | Request) => {
       const url = String(request);
@@ -242,14 +238,6 @@ describe("Figma Plugin pairing bridge", () => {
       targetMode: "link",
       scope: "current_page",
       transport: "plugin",
-      includeVariables: true,
-      includeCodeConnect: true,
-      includeMotion: true,
-      includeLibraries: false,
-      includeAssets: true,
-      clientFrameworks: "unknown",
-      clientLanguages: "unknown",
-      mode: "live",
     };
     const run = createFigmaRun("owner", input);
     const execution = runPluginFigmaExtraction(bridge, "owner", { accessToken: "access", expiresAt: Date.now() + 10 * 60_000 }, input, run, (event) => upsertRunEvent(run, event));
@@ -277,6 +265,180 @@ describe("Figma Plugin pairing bridge", () => {
     expect(JSON.parse(strFromU8(zip["nodes/Home-1-2.json"]))).toMatchObject({ id: "1:2" });
     expect(zip["screenshots/Home-1-2.png"]).toEqual(png);
     expect(JSON.parse(strFromU8(zip["metadata/comments.json"])).comments[0].id).toBe("comment-1");
+  });
+
+  it("화면·전체 본문·기능 묶음 이미지를 기기별 폴더와 screens.json 색인으로 조립한다", async () => {
+    const bridge = new FigmaPluginBridge();
+    const connection = connect(bridge);
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({})));
+    const input: FigmaExtractionInput = {
+      target: "",
+      targetMode: "link",
+      scope: "current_page",
+      transport: "plugin",
+    };
+    const run = createFigmaRun("owner", input);
+    const execution = runPluginFigmaExtraction(bridge, "owner", { accessToken: "access", expiresAt: Date.now() + 10 * 60_000 }, input, run, (event) => upsertRunEvent(run, event));
+    const job = await bridge.nextJob(connection.sessionToken, undefined, 1_000);
+    const png = (marker: number) => Uint8Array.from([137, 80, 78, 71, marker]);
+    for (const [slot, marker] of [["screen-1", 1], ["group-1", 3]] as const) {
+      bridge.uploadArtifact(connection.sessionToken, job!.id, slot, "image/png", png(marker));
+    }
+    bridge.submitResult(connection.sessionToken, job!.id, {
+      scope: "current_page",
+      nodeCount: 3,
+      partial: false,
+      meta: { pluginVersion: "1.2.0", editorType: "figma", fileKey: target.fileKey, pageId: "0:1", pageName: "Main" },
+      page: {
+        id: "0:1",
+        name: "Main",
+        nodes: [],
+        devices: [{ device: "mobile", width: 375, minWidth: 367, maxWidth: 383, minHeight: 600, source: "name", examples: ["Mobile"], screens: 1 }],
+        screens: [{
+          nodeId: "2:2", nodeName: "관심종목 정렬", nodeType: "FRAME", device: "mobile", width: 375, height: 812,
+          path: ["05 자산 > 052 계좌잔고 > 기본화면"], groupNodeId: "1:2", slot: "screen-1", scale: 2,
+        }],
+        groups: [{ nodeId: "1:2", nodeName: "Step 01", nodeType: "FRAME", path: ["05 자산 > 052 계좌잔고 > 기본화면"], width: 900, height: 900, slot: "group-1", scale: 0.5, screens: [{ nodeId: "2:2", x: 400, y: 0, width: 375, height: 812 }] }],
+      },
+      artifacts: [
+        { slot: "screen-1", kind: "screenshot", mimeType: "image/png", name: "관심종목 정렬.png", bytes: 5 },
+        { slot: "group-1", kind: "screenshot", mimeType: "image/png", name: "Step 01.png", bytes: 5 },
+      ],
+    });
+    await execution;
+    const zip = unzipSync(buildFigmaRunZip(run));
+    expect(zip["screens/mobile/관심종목-정렬-2-2.png"]).toEqual(png(1));
+    expect(Object.keys(zip).some((path) => path.includes("-scroll-"))).toBe(false);
+    expect(zip["groups/Step-01-1-2.png"]).toEqual(png(3));
+    const index = JSON.parse(strFromU8(zip["screens.json"]));
+    expect(index.devices[0]).toMatchObject({ device: "mobile", width: 375, screens: 1 });
+    expect(index.screens[0]).toMatchObject({
+      nodeId: "2:2",
+      device: "mobile",
+      groupNodeId: "1:2",
+      images: { viewport: { path: "screens/mobile/관심종목-정렬-2-2.png", scale: 2 } },
+    });
+    // 묶음 이미지 위 화면 위치는 Figma 단위와 이미지 픽셀을 함께 준다. 픽셀 = 단위 × scale.
+    expect(index.groups[0]).toMatchObject({
+      nodeId: "1:2",
+      image: { path: "groups/Step-01-1-2.png", scale: 0.5 },
+      screens: [{ nodeId: "2:2", rect: { x: 400, y: 0, width: 375, height: 812 }, imageRect: { x: 200, y: 0, width: 188, height: 406 } }],
+    });
+    expect(run.pagePackage?.screens).toMatchObject({ total: 1, groups: 1, failed: 0, byDevice: { mobile: 1 }, indexPath: "screens.json" });
+  });
+
+  it("이미지 원점 보정과 주석 위치를 이미지 픽셀로 옮겨 screens.json에 쓴다", async () => {
+    const bridge = new FigmaPluginBridge();
+    const connection = connect(bridge);
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({})));
+    const input: FigmaExtractionInput = { target: "", targetMode: "link", scope: "current_page", transport: "plugin" };
+    const run = createFigmaRun("owner", input);
+    const execution = runPluginFigmaExtraction(bridge, "owner", { accessToken: "access", expiresAt: Date.now() + 10 * 60_000 }, input, run, (event) => upsertRunEvent(run, event));
+    const job = await bridge.nextJob(connection.sessionToken, undefined, 1_000);
+    const png = Uint8Array.from([137, 80, 78, 71]);
+    for (const slot of ["screen-1", "group-1"]) bridge.uploadArtifact(connection.sessionToken, job!.id, slot, "image/png", png);
+    bridge.submitResult(connection.sessionToken, job!.id, {
+      scope: "current_page",
+      nodeCount: 3,
+      partial: false,
+      meta: { pluginVersion: "1.3.0", editorType: "figma", fileKey: target.fileKey, pageId: "0:1", pageName: "Main" },
+      page: {
+        id: "0:1",
+        name: "Main",
+        nodes: [],
+        screens: [{ nodeId: "2:2", nodeName: "Home", nodeType: "FRAME", device: "mobile", width: 375, height: 812, path: [], groupNodeId: "1:2", slot: "screen-1", scale: 2, renderOffset: { x: 31, y: 4 } }],
+        groups: [{ nodeId: "1:2", nodeName: "Step", nodeType: "FRAME", path: [], width: 900, height: 900, slot: "group-1", scale: 0.5, renderOffset: { x: 10, y: 0 }, screens: [{ nodeId: "2:2", x: 400, y: 0, width: 375, height: 812 }] }],
+        annotations: [
+          { nodeId: "3:3", nodeName: "List", nodeType: "FRAME", label: "국내 종목에만 노출", categoryId: "cat-content", screenNodeId: "2:2", groupNodeId: "1:2", rect: { x: 0, y: 100, width: 375, height: 700 } },
+          { nodeId: "1:2", nodeName: "Step", nodeType: "FRAME", label: "공통", groupNodeId: "1:2", rect: { x: 0, y: 0, width: 900, height: 900 } },
+        ],
+        annotationCategories: [{ id: "cat-content", label: "콘텐츠", color: "orange", isPreset: false }],
+      },
+      artifacts: [
+        { slot: "screen-1", kind: "screenshot", mimeType: "image/png", name: "Home.png", bytes: 4 },
+        { slot: "group-1", kind: "screenshot", mimeType: "image/png", name: "Step.png", bytes: 4 },
+      ],
+    });
+    await execution;
+    const index = JSON.parse(strFromU8(unzipSync(buildFigmaRunZip(run))["screens.json"]));
+    // 원점 보정은 이미지 픽셀로 준다: 31 × 2 = 62.
+    expect(index.screens[0]).toMatchObject({ images: { viewport: { scale: 2, offset: { x: 62, y: 8 } } }, annotations: 1 });
+    // 묶음 위 화면 위치에도 보정이 들어간다: (400 + 10) × 0.5 = 205.
+    expect(index.groups[0]).toMatchObject({ image: { offset: { x: 5, y: 0 } }, screens: [{ imageRect: { x: 205, y: 0, width: 188, height: 406 } }] });
+    expect(index.annotationCategories).toEqual([{ id: "cat-content", label: "콘텐츠", color: "orange", isPreset: false }]);
+    // 화면 주석은 화면 이미지 픽셀로: ((0 + 31) × 2, (100 + 4) × 2).
+    expect(index.annotations[0]).toMatchObject({ category: "콘텐츠", screenNodeId: "2:2", imageRect: { x: 62, y: 208, width: 750, height: 1400 } });
+    // 화면 밖 주석은 묶음 이미지 픽셀로.
+    expect(index.annotations[1]).toMatchObject({ groupNodeId: "1:2", imageRect: { x: 5, y: 0, width: 450, height: 450 } });
+    expect(index.annotations[1].category).toBeUndefined();
+    expect(run.pagePackage?.screens).toMatchObject({ annotations: 2 });
+    // 폴더에서 바로 여는 뷰어가 같은 색인을 품는다. 데이터 속 <가 스크립트를 닫지 못하게 이스케이프한다.
+    const viewer = strFromU8(unzipSync(buildFigmaRunZip(run))["screens.html"]);
+    expect(viewer).toContain("screens/mobile/Home-2-2.png");
+    expect(viewer).toContain("국내 종목에만 노출");
+    expect(viewer.match(/<\/script>/g)).toHaveLength(2);
+  });
+});
+
+describe("추출 전 화면 크기 확인", () => {
+  const mobile = { device: "mobile", width: 375, minWidth: 367, maxWidth: 383, minHeight: 600, source: "name" as const, examples: ["Mobile"], screens: 4 };
+  const popup = { device: "repeated-520x600", width: 520, height: 600, minWidth: 512, maxWidth: 528, minHeight: 592, maxHeight: 608, source: "repeat" as const, examples: ["Popup_info_medium"], screens: 9 };
+
+  it("스캔은 이미지 없이 후보만 요청하고 운영자에게 보여 줄 요약을 돌려준다", async () => {
+    const bridge = new FigmaPluginBridge();
+    const connection = connect(bridge);
+    const scanning = scanPluginScreens(bridge, "owner");
+    const job = await bridge.nextJob(connection.sessionToken, undefined, 1_000);
+    expect(job).toMatchObject({ type: "extract_page", fileKey: target.fileKey, options: { scanOnly: true } });
+    bridge.submitResult(connection.sessionToken, job!.id, {
+      scope: "current_page",
+      nodeCount: 900,
+      partial: false,
+      meta: { pluginVersion: "1.2.0", editorType: "figma", fileKey: target.fileKey, pageId: "0:1", pageName: "주식" },
+      page: {
+        id: "0:1",
+        name: "주식",
+        nodes: [],
+        devices: [mobile, popup],
+        ignoredDevices: [{ device: "fold", width: 343, examples: ["Fold"], reason: "화면 안" }],
+        screens: [
+          { nodeId: "1:1", nodeName: "A", nodeType: "FRAME", device: "mobile", width: 375, height: 812, path: [] },
+          { nodeId: "1:2", nodeName: "B", nodeType: "FRAME", device: "mobile", width: 375, height: 812, path: [] },
+        ],
+        groups: [{ nodeId: "0:9", nodeName: "Step 01", nodeType: "FRAME", path: [], width: 900, height: 900, screens: [] }],
+      },
+      artifacts: [],
+    });
+    await expect(scanning).resolves.toEqual({
+      fileKey: target.fileKey,
+      fileName: "Trace Fixture",
+      pageId: "0:1",
+      pageName: "주식",
+      nodeCount: 900,
+      devices: [mobile, popup],
+      ignoredDevices: [expect.objectContaining({ device: "fold" })],
+      screens: 2,
+      groups: 1,
+    });
+  });
+
+  it("운영자가 고른 크기를 현재 페이지 추출 작업에 그대로 넘긴다", async () => {
+    const bridge = new FigmaPluginBridge();
+    const connection = connect(bridge);
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({})));
+    const input: FigmaExtractionInput = { target: "", targetMode: "link", scope: "current_page", transport: "plugin", screenDevices: [popup] };
+    const run = createFigmaRun("owner", input);
+    const execution = runPluginFigmaExtraction(bridge, "owner", { accessToken: "access", expiresAt: Date.now() + 10 * 60_000 }, input, run, (event) => upsertRunEvent(run, event));
+    const job = await bridge.nextJob(connection.sessionToken, undefined, 1_000);
+    expect(job?.options).toMatchObject({ devices: [popup] });
+    expect(job?.options.scanOnly).toBeUndefined();
+    bridge.submitResult(connection.sessionToken, job!.id, {
+      scope: "current_page", nodeCount: 0, partial: false,
+      meta: { pluginVersion: "1.2.0", editorType: "figma", fileKey: target.fileKey, pageId: "0:1", pageName: "Main" },
+      page: { id: "0:1", name: "Main", nodes: [] },
+      artifacts: [],
+    });
+    await execution;
   });
 });
 

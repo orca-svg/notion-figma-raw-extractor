@@ -73,7 +73,7 @@ export function DataInspector({ event }: { event?: ExtractionEvent }) {
       <aside className="inspector empty-inspector">
         <p className="eyebrow">Raw inspector</p>
         <h2>호출을 선택하세요</h2>
-        <p>실행 기록에서 한 단계를 누르면 MCP 또는 Codex 중계 이벤트의 입력과 반환값을 볼 수 있습니다.</p>
+        <p>실행 기록에서 한 단계를 누르면 그 단계의 입력과 반환값을 볼 수 있습니다.</p>
       </aside>
     );
   }

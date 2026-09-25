@@ -2,6 +2,7 @@ import { randomBytes, randomInt, randomUUID, timingSafeEqual } from "node:crypto
 import type {
   FigmaPluginExtractionResult,
   FigmaPluginJob,
+  FigmaPluginJobOptions,
   FigmaPluginMeta,
   FigmaTarget,
   FigmaFileType,
@@ -11,6 +12,13 @@ const PAIRING_TTL_MS = 5 * 60 * 1000;
 const CONNECTION_STALE_MS = 35 * 1000;
 /** 총 소요 시간이 아니라 "소식이 끊긴 시간"의 한계다. 업로드·하트비트가 올 때마다 다시 잰다. */
 const JOB_IDLE_TTL_MS = 90 * 1000;
+// 큰 페이지는 JSON 내보내기·화면 탐지가 Figma 메인 스레드를 수십 초씩 붙잡아 그동안 하트비트가 나가지 못한다.
+// 노드 8만 개 페이지에서 35초를 넘겨 연결째 끊긴 적이 있어, 페이지 작업은 무소식 한계를 넉넉히 둔다.
+const PAGE_JOB_IDLE_TTL_MS = 5 * 60 * 1000;
+
+function jobIdleTtl(job: FigmaPluginJob): number {
+  return job.type === "extract_page" && !job.options.scanOnly ? PAGE_JOB_IDLE_TTL_MS : JOB_IDLE_TTL_MS;
+}
 const MAX_FAILED_PAIR_ATTEMPTS = 5;
 const MAX_ARTIFACT_BYTES = 48 * 1024 * 1024;
 // 플러그인 파트 예산(24MB)보다 커야 한다. 같거나 작으면 예산에 딱 맞춘 파트가 전송에서 거부된다.
@@ -178,13 +186,20 @@ export class FigmaPluginBridge {
     }, signal);
   }
 
-  requestPageExtraction(ownerSessionId: string, fileKey: string, fileType: FigmaFileType, signal?: AbortSignal): Promise<CompletedPluginJob> {
+  requestPageExtraction(
+    ownerSessionId: string,
+    fileKey: string,
+    fileType: FigmaFileType,
+    signal?: AbortSignal,
+    /** scanOnly: 후보만 계산. devices: 확인 화면에서 고른 화면 크기. */
+    page: Pick<FigmaPluginJobOptions, "scanOnly" | "devices" | "expectedPageId"> = {},
+  ): Promise<CompletedPluginJob> {
     return this.requestJob(ownerSessionId, {
       id: randomUUID(),
       type: "extract_page",
       fileKey,
       fileType,
-      options: this.jobOptions(),
+      options: { ...this.jobOptions(), ...page },
     }, signal);
   }
 
@@ -224,7 +239,7 @@ export class FigmaPluginBridge {
         resolve,
         reject,
         settled: false,
-        timer: setTimeout(() => this.failJob(job.id, new Error("Figma 플러그인 추출 시간이 초과되었습니다.")), JOB_IDLE_TTL_MS),
+        timer: setTimeout(() => this.failJob(job.id, new Error("Figma 플러그인 추출 시간이 초과되었습니다.")), jobIdleTtl(job)),
       };
       this.jobs.set(job.id, pending);
       if (connection.waiter) {
@@ -261,7 +276,7 @@ export class FigmaPluginBridge {
   private touchJob(pending: PendingJob): void {
     if (pending.settled) return;
     clearTimeout(pending.timer);
-    pending.timer = setTimeout(() => this.failJob(pending.job.id, new Error("Figma 플러그인 추출 시간이 초과되었습니다.")), JOB_IDLE_TTL_MS);
+    pending.timer = setTimeout(() => this.failJob(pending.job.id, new Error("Figma 플러그인 추출 시간이 초과되었습니다.")), jobIdleTtl(pending.job));
   }
 
   submitResult(token: string, jobId: string, result: FigmaPluginExtractionResult): void {
@@ -287,6 +302,8 @@ export class FigmaPluginBridge {
         return;
       }
     }
+    // 페어링 시점의 페이지는 곧 낡는다. 작업 결과가 알려 준 열린 페이지로 갱신해 연결 카드가 실제 페이지를 보이게 한다.
+    connection.meta = { ...connection.meta, pageId: result.meta.pageId ?? connection.meta.pageId, pageName: result.meta.pageName ?? connection.meta.pageName };
     pending.settled = true;
     clearTimeout(pending.timer);
     this.jobs.delete(jobId);
@@ -329,8 +346,15 @@ export class FigmaPluginBridge {
     for (const [code, pairing] of this.pairings) if (pairing.expiresAt <= now) this.pairings.delete(code);
     for (const [source, failed] of this.failedAttempts) if (failed.expiresAt <= now) this.failedAttempts.delete(source);
     for (const [token, connection] of this.connections) {
+      // 작업 중인 연결은 작업 자신의 무소식 한계(jobIdleTtl)가 판단한다. 여기서 끊으면 늦게 온 하트비트가 오히려 작업을 죽인다.
+      if (this.hasActiveJob(token)) continue;
       if (now - connection.lastSeenAt > CONNECTION_STALE_MS) this.dropConnection(token, "Figma 플러그인 연결이 만료되었습니다.");
     }
+  }
+
+  private hasActiveJob(token: string): boolean {
+    for (const pending of this.jobs.values()) if (pending.connectionToken === token && !pending.settled) return true;
+    return false;
   }
 }
 

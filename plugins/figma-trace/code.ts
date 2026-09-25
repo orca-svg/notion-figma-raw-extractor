@@ -4,6 +4,12 @@ type BridgeJobOptions = {
   maxDimension: number;
   maxAssets: number;
   maxAssetBytes: number;
+  /** 페이지 추출: 이미지와 JSON 없이 화면 크기 후보만 계산한다. 추출 전 확인 화면용. */
+  scanOnly?: boolean;
+  /** 페이지 추출: 운영자가 확인 화면에서 고른 화면 크기. 주어지면 스스로 학습하지 않는다. */
+  devices?: DeviceResult[];
+  /** 페이지 추출: 확인 화면의 후보를 찾은 페이지. 지금 열린 페이지가 다르면 추출하지 않는다. */
+  expectedPageId?: string;
 };
 
 type BridgeJob = {
@@ -43,6 +49,81 @@ type PageNodeResult = {
   error?: string;
 };
 
+/** 이 파일에서 "화면"으로 보는 기기 크기. 이름에 기기가 적힌 프레임에서 배운다. */
+type DeviceResult = {
+  device: string;
+  width?: number;
+  height?: number;
+  minWidth: number;
+  maxWidth: number;
+  minHeight: number;
+  maxHeight?: number;
+  /**
+   * name: 기기 이름이 붙은 프레임에서 배움. repeat: 이름은 없지만 화면 밖에서 같은 크기가 여러 번 나옴.
+   * default: 둘 다 없어 모바일 기본 범위를 씀.
+   */
+  source: "name" | "repeat" | "default";
+  examples: string[];
+  screens: number;
+  /** 운영자가 확인 화면에서 고른 크기로 추출했으면 true. */
+  selected?: boolean;
+};
+
+/** 이름은 기기처럼 보였지만 기기 크기로 인정하지 않은 것. 운영자가 판단을 되짚을 수 있게 남긴다. */
+type IgnoredDevice = { device: string; width?: number; height?: number; examples: string[]; reason: string };
+
+type ScreenResult = {
+  nodeId: string;
+  nodeName: string;
+  nodeType: string;
+  device: string;
+  width: number;
+  height: number;
+  /** 자동 이름(Frame 123)을 뺀 상위 이름. 기능 묶음 경로로 쓴다. */
+  path: string[];
+  groupNodeId?: string;
+  slot?: string;
+  scale?: number;
+  /** 프레임 원점이 이미지 안에서 놓인 위치(Figma 단위). 그림자·넘친 내용 때문에 이미지가 프레임보다 크면 0이 아니다. */
+  renderOffset?: Offset;
+  error?: string;
+};
+
+type Offset = { x: number; y: number };
+
+/** Figma 기본 주석 하나. 붙은 노드와, 그 노드를 품은 화면·기능 묶음을 함께 적는다. */
+type AnnotationResult = {
+  nodeId: string;
+  nodeName: string;
+  nodeType: string;
+  label?: string;
+  labelMarkdown?: string;
+  categoryId?: string;
+  /** 주석에 고정한 속성 종류(width, fills 등). 값은 노드 JSON에 있다. */
+  properties?: string[];
+  screenNodeId?: string;
+  groupNodeId?: string;
+  /** 붙은 노드의 위치. 화면이 있으면 화면 원점, 없으면 기능 묶음 원점, 둘 다 없으면 페이지 기준 Figma 단위다. */
+  rect?: BoxRect;
+};
+
+type AnnotationCategoryResult = { id: string; label: string; color: string; isPreset: boolean };
+
+type GroupResult = {
+  nodeId: string;
+  nodeName: string;
+  nodeType: string;
+  path: string[];
+  width: number;
+  height: number;
+  slot?: string;
+  scale?: number;
+  renderOffset?: Offset;
+  /** 소속 화면의 위치. 묶음 원점 기준 Figma 단위이며, 이미지 픽셀은 (값 + renderOffset) × scale이다. */
+  screens: Array<{ nodeId: string; x: number; y: number; width: number; height: number }>;
+  error?: string;
+};
+
 type PluginResult = {
   scope: "node" | "current_page";
   snapshot?: unknown;
@@ -50,7 +131,7 @@ type PluginResult = {
   partial: boolean;
   omittedNodes?: number;
   meta: ReturnType<typeof pluginMeta> & { nodeId?: string; nodeName?: string; nodeType?: string };
-  page?: { id: string; name: string; nodes: PageNodeResult[] };
+  page?: { id: string; name: string; nodes: PageNodeResult[]; devices?: DeviceResult[]; ignoredDevices?: IgnoredDevice[]; screens?: ScreenResult[]; groups?: GroupResult[]; annotations?: AnnotationResult[]; annotationCategories?: AnnotationCategoryResult[] };
   /** 담지 못한 에셋의 사유별 개수. 0이면 생략한다. */
   omittedAssets?: { cap: number; oversized: number; failed: number; duplicate: number };
   artifacts: Array<Omit<ArtifactPayload, "data"> & { bytes: number }>;
@@ -61,7 +142,7 @@ figma.showUI(__html__, { width: 320, height: 330, themeColors: true });
 
 function pluginMeta() {
   return {
-    pluginVersion: "1.1.0",
+    pluginVersion: "1.3.0",
     editorType: figma.editorType === "figjam" ? "figjam" as const : "figma" as const,
     fileKey: figma.fileKey,
     fileName: figma.root.name,
@@ -249,21 +330,447 @@ function serializedSnapshot(rawSnapshot: unknown, maxNodes: number, maxBytes: nu
   return { ...pruned, encoded };
 }
 
-async function screenshot(node: SceneNode, maxDimension: number, maxBytes: number, slot = "screenshot"): Promise<ArtifactPayload | undefined> {
-  if (!("exportAsync" in node)) return undefined;
-  const bounds = "absoluteBoundingBox" in node ? node.absoluteBoundingBox : null;
+/**
+ * 목표 배율로 찍되 긴 변이 maxEdge를 넘지 않게 줄이고, 용량을 넘으면 0.65배씩 줄여 최대 4번 찍는다.
+ * 실패 사유를 돌려주는 이유: 화면 이미지가 조용히 빠지면 KB에서 그 화면이 통째로 사라진다.
+ */
+async function exportPng(
+  node: SceneNode,
+  targetScale: number,
+  maxEdge: number,
+  maxBytes: number,
+): Promise<{ data: Uint8Array; scale: number } | { error: string }> {
+  if (!("exportAsync" in node)) return { error: "이 노드는 이미지로 내보낼 수 없습니다." };
+  // exportAsync는 그림자·넘친 내용까지 그려진 범위를 내보낸다. 긴 변 한도도 그 범위로 잰다.
+  const bounds = ("absoluteRenderBounds" in node ? node.absoluteRenderBounds : null) ?? ("absoluteBoundingBox" in node ? node.absoluteBoundingBox : null);
   const longest = bounds ? Math.max(bounds.width, bounds.height) : 0;
-  let scale = longest > 0 ? Math.min(1, maxDimension / longest) : 1;
+  let scale = longest > 0 ? Math.min(targetScale, maxEdge / longest) : targetScale;
   try {
     for (let attempt = 0; attempt < 4; attempt += 1) {
-      const data = await node.exportAsync({ format: "PNG", constraint: { type: "SCALE", value: Math.max(0.01, scale) } });
-      if (data.byteLength <= maxBytes) return { slot, kind: "screenshot", mimeType: "image/png", name: `${safeName(node.name)}.png`, data };
-      scale *= .65;
+      const value = Math.max(0.01, scale);
+      const data = await node.exportAsync({ format: "PNG", constraint: { type: "SCALE", value } });
+      if (data.byteLength > maxBytes) { scale *= .65; continue; }
+      return { data, scale: value };
     }
-    return undefined;
-  } catch {
-    return undefined;
+    return { error: `배율을 네 번 낮춰도 ${Math.round(maxBytes / 1024 / 1024)}MB를 넘었습니다.` };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+async function screenshot(node: SceneNode, maxDimension: number, maxBytes: number, slot = "screenshot"): Promise<ArtifactPayload | undefined> {
+  const exported = await exportPng(node, 1, maxDimension, maxBytes);
+  if ("error" in exported) return undefined;
+  return { slot, kind: "screenshot", mimeType: "image/png", name: `${safeName(node.name)}.png`, data: exported.data };
+}
+
+/*
+ * 화면 단위 스크린샷.
+ *
+ * 최상위 노드 한 장만 찍으면 페이지가 Section 하나일 때 87,000개 노드가 2,048px 한 장에 눌려
+ * 모바일 화면이 47px 폭이 된다. 그래서 기기 크기의 프레임을 화면으로 골라 따로 찍는다.
+ * 기기 크기는 고정 범위가 아니라 이 파일의 이름 붙은 프레임에서 배운다. 실제 파일에서
+ * 태블릿이 1366×1024, 폴드가 768×852여서 범용 범위로는 둘 다 놓쳤다.
+ */
+const DEVICE_NAMES: Array<{ device: string; pattern: RegExp }> = [
+  { device: "fold", pattern: /fold|폴드/i },
+  { device: "mobile", pattern: /mobile|모바일/i },
+  { device: "tablet", pattern: /tablet|태블릿|ipad/i },
+  { device: "desktop", pattern: /desktop|데스크탑|데스크톱/i },
+];
+const DEVICE_TOLERANCE = 8;
+/** 모바일은 스크롤 길이가 화면마다 달라 폭만 본다. 이보다 짧은 375폭 노드는 화면 속 섹션이다. */
+const MOBILE_MIN_HEIGHT = 600;
+/** 휴대폰은 2~3배 밀도로 그린다. 1배 이미지의 작은 글씨는 뭉개진다. */
+const SCREEN_SCALE = 2;
+const SCREEN_MAX_EDGE = 8_192;
+/** 기능 묶음은 흐름과 배치를 보는 이미지다. 화면을 읽는 용도는 화면 이미지가 맡는다. */
+const GROUP_MAX_EDGE = 4_096;
+const AUTO_NAME = /^(Frame|Group|Rectangle|Vector|Ellipse)\s+\d+$/;
+
+type BoxRect = { x: number; y: number; width: number; height: number };
+
+function rectOf(node: SceneNode): BoxRect | undefined {
+  const bounds = "absoluteBoundingBox" in node ? node.absoluteBoundingBox : null;
+  if (!bounds) return undefined;
+  return { x: bounds.x ?? 0, y: bounds.y ?? 0, width: bounds.width, height: bounds.height };
+}
+
+/**
+ * 이미지 원점은 프레임이 아니라 그려진 범위의 왼쪽 위다. 그림자 여백이나 프레임 밖으로 넘친 내용이 있으면
+ * 둘이 어긋나 좌표가 밀린다(NH 주식 페이지 162장 중 13장). 그 차이를 Figma 단위로 돌려준다.
+ */
+function renderOffsetOf(node: SceneNode): Offset | undefined {
+  const box = rectOf(node);
+  const render = "absoluteRenderBounds" in node ? node.absoluteRenderBounds : null;
+  if (!box || !render) return undefined;
+  const x = Math.round((box.x - render.x) * 100) / 100;
+  const y = Math.round((box.y - render.y) * 100) / 100;
+  return x === 0 && y === 0 ? undefined : { x, y };
+}
+
+function annotationsOf(node: SceneNode): readonly Annotation[] {
+  try {
+    return "annotations" in node ? (node as SceneNode & { annotations: readonly Annotation[] }).annotations ?? [] : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 카테고리 이름(Description·콘텐츠 등)은 노드 JSON에 없고 id만 있다. 파일의 카테고리 목록에서 읽는다. */
+/**
+ * 주석이 붙은 노드 id를 이미 내보낸 노드 JSON에서 찾는다. 노드마다 annotations를 물으면
+ * 8만 개 페이지에서 수만 번 샌드박스를 오가 추출이 10분 넘게 늘어졌다. JSON 순회는 JS 안에서 끝난다.
+ */
+function collectAnnotatedIds(value: unknown, into: Set<string>): void {
+  if (!isRecord(value)) return;
+  if (typeof value.id === "string" && Array.isArray(value.annotations) && value.annotations.length > 0) into.add(value.id);
+  if (Array.isArray(value.children)) for (const child of value.children) collectAnnotatedIds(child, into);
+}
+
+async function annotationCategories(): Promise<AnnotationCategoryResult[]> {
+  try {
+    if (!figma.annotations) return [];
+    const categories = await figma.annotations.getAnnotationCategoriesAsync();
+    return categories.map((category) => ({ id: category.id, label: category.label, color: category.color, isPreset: category.isPreset }));
+  } catch {
+    return [];
+  }
+}
+
+function isScreenCandidateType(node: SceneNode): boolean {
+  return node.type === "FRAME" || node.type === "COMPONENT" || node.type === "INSTANCE";
+}
+
+function visibleChildren(node: SceneNode): SceneNode[] {
+  if (!("children" in node)) return [];
+  return (node.children as readonly SceneNode[]).filter((child) => child.visible !== false);
+}
+
+/** 배운 크기마다 근거가 된 프레임들. 나중에 그 근거가 전부 다른 화면 안에 있으면 크기를 버린다. */
+const deviceSupport = new Map<DeviceResult, SceneNode[]>();
+
+function learnDevices(nodes: SceneNode[]): DeviceResult[] {
+  deviceSupport.clear();
+  const devices: DeviceResult[] = [];
+  for (const node of nodes) {
+    if (!isScreenCandidateType(node) || node.visible === false || / > /.test(node.name)) continue;
+    const rect = rectOf(node);
+    // 컨테이너(2,515폭 "… > 모바일 > …")와 바(1,920×36 "Top_desktop")는 기기 크기가 아니다.
+    if (!rect || rect.width < 300 || rect.width > 2_600 || rect.height < 400) continue;
+    const named = DEVICE_NAMES.find(({ pattern }) => pattern.test(node.name));
+    if (!named) continue;
+    const width = Math.round(rect.width);
+    const height = Math.round(rect.height);
+    const mobile = named.device === "mobile";
+    const known = devices.find((device) => device.device === named.device
+      && Math.abs((device.width ?? 0) - width) <= DEVICE_TOLERANCE
+      && (mobile || Math.abs((device.height ?? 0) - height) <= DEVICE_TOLERANCE));
+    if (known) {
+      if (known.examples.length < 3 && !known.examples.includes(node.name)) known.examples.push(node.name);
+      deviceSupport.get(known)?.push(node);
+      continue;
+    }
+    const learned: DeviceResult = {
+      device: named.device,
+      width,
+      height: mobile ? undefined : height,
+      minWidth: width - DEVICE_TOLERANCE,
+      maxWidth: width + DEVICE_TOLERANCE,
+      minHeight: mobile ? MOBILE_MIN_HEIGHT : height - DEVICE_TOLERANCE,
+      maxHeight: mobile ? undefined : height + DEVICE_TOLERANCE,
+      source: "name",
+      examples: [node.name],
+      screens: 0,
+    };
+    devices.push(learned);
+    deviceSupport.set(learned, [node]);
+  }
+  return devices;
+}
+
+/** 이름도 반복도 근거가 없을 때만 쓰는 추측. 증거가 하나라도 있으면 쓰지 않는다. */
+function defaultDevices(): DeviceResult[] {
+  return [{ device: "mobile", minWidth: 360, maxWidth: 430, minHeight: MOBILE_MIN_HEIGHT, source: "default", examples: [], screens: 0 }];
+}
+
+function matchDevice(node: SceneNode, devices: DeviceResult[]): DeviceResult | undefined {
+  if (!isScreenCandidateType(node)) return undefined;
+  const rect = rectOf(node);
+  if (!rect) return undefined;
+  return devices.find((device) => rect.width >= device.minWidth && rect.width <= device.maxWidth
+    && rect.height >= device.minHeight && (device.maxHeight === undefined || rect.height <= device.maxHeight));
+}
+
+/** 같은 크기의 자식 하나만 감싼 포장 프레임. 이때만 안으로 내려간다. 375폭 섹션을 품은 화면은 포장이 아니다. */
+function isPureWrapper(node: SceneNode, devices: DeviceResult[]): boolean {
+  const children = visibleChildren(node);
+  if (children.length !== 1 || !matchDevice(children[0], devices)) return false;
+  const outer = rectOf(node);
+  const inner = rectOf(children[0]);
+  if (!outer || !inner) return false;
+  return Math.abs(outer.x - inner.x) <= DEVICE_TOLERANCE && Math.abs(outer.y - inner.y) <= DEVICE_TOLERANCE
+    && Math.abs(outer.width - inner.width) <= DEVICE_TOLERANCE && Math.abs(outer.height - inner.height) <= DEVICE_TOLERANCE;
+}
+
+type FoundScreen = { node: SceneNode; device: DeviceResult; ancestors: SceneNode[] };
+
+function findScreens(node: SceneNode, devices: DeviceResult[], ancestors: SceneNode[], found: FoundScreen[]): void {
+  if (node.visible === false) return;
+  const device = matchDevice(node, devices);
+  if (device && !isPureWrapper(node, devices)) {
+    found.push({ node, device, ancestors });
+    return;
+  }
+  for (const child of visibleChildren(node)) findScreens(child, devices, [...ancestors, node], found);
+}
+
+function insideAny(node: SceneNode, ids: Set<string>): boolean {
+  for (let parent = node.parent; parent; parent = parent.parent) if (ids.has(parent.id)) return true;
+  return false;
+}
+
+/** 이보다 적게 나오는 크기는 팝업·카드가 우연히 같은 크기일 수 있어 화면으로 보지 않는다. */
+const MIN_REPEAT = 3;
+
+/**
+ * 기기 이름이 없는 화면 크기. NH 파일은 이름 규칙이 섞여 있어 미니모드 360×600 창 32개와 스플릿뷰
+ * 1536×1000 프레임 44개가 이름으로는 하나도 잡히지 않았다. 대신 화면은 같은 크기로 여러 장 그린다는
+ * 점을 쓴다. 이미 찾은 화면 안의 노드와 화면을 품은 컨테이너는 세지 않는다. 그래야 목록 카드 같은
+ * 반복 컴포넌트나 여러 화면을 담은 묶음 프레임이 화면 크기로 올라오지 않는다.
+ */
+function learnRepeatedSizes(nodes: SceneNode[], found: FoundScreen[], known: DeviceResult[]): DeviceResult[] {
+  const screenIds = new Set(found.map((screen) => screen.node.id));
+  const containers = new Set(found.flatMap((screen) => screen.ancestors.map((ancestor) => ancestor.id)));
+  const sizes: Array<{ width: number; height: number; nodes: SceneNode[] }> = [];
+  for (const node of nodes) {
+    // 화면은 프레임으로 그리고, 패널·팝업·위젯은 컴포넌트 인스턴스로 가져다 쓴다. NH 스플릿뷰에서 사이드 패널
+    // 인스턴스 84개가 화면 52개로 올라왔다. 그래서 횟수는 프레임만 센다. 인정된 크기의 인스턴스는 나중에 화면으로 잡힌다.
+    if (node.type !== "FRAME" || node.visible === false || / > /.test(node.name)) continue;
+    if (screenIds.has(node.id) || containers.has(node.id) || matchDevice(node, known) || insideAny(node, screenIds)) continue;
+    const rect = rectOf(node);
+    if (!rect || rect.width < 300 || rect.width > 2_600 || rect.height < 400) continue;
+    const size = sizes.find((candidate) => Math.abs(candidate.width - rect.width) <= DEVICE_TOLERANCE && Math.abs(candidate.height - rect.height) <= DEVICE_TOLERANCE);
+    if (size) size.nodes.push(node);
+    else sizes.push({ width: Math.round(rect.width), height: Math.round(rect.height), nodes: [node] });
+  }
+  return sizes
+    .filter((size) => size.nodes.length >= MIN_REPEAT)
+    .sort((a, b) => b.nodes.length - a.nodes.length)
+    .map((size) => {
+      const device: DeviceResult = {
+        device: `repeated-${size.width}x${size.height}`,
+        width: size.width,
+        height: size.height,
+        minWidth: size.width - DEVICE_TOLERANCE,
+        maxWidth: size.width + DEVICE_TOLERANCE,
+        minHeight: size.height - DEVICE_TOLERANCE,
+        maxHeight: size.height + DEVICE_TOLERANCE,
+        source: "repeat",
+        examples: [...new Set(size.nodes.map((node) => node.name))].slice(0, 3),
+        screens: 0,
+      };
+      deviceSupport.set(device, size.nodes);
+      return device;
+    });
+}
+
+function meaningfulPath(ancestors: SceneNode[]): string[] {
+  return ancestors.map((ancestor) => ancestor.name).filter((name) => name.trim() && !AUTO_NAME.test(name.trim()));
+}
+
+function detectScreens(roots: readonly SceneNode[], candidates: DeviceResult[]): FoundScreen[] {
+  const result: FoundScreen[] = [];
+  for (const root of roots) findScreens(root, candidates, [], result);
+  return result;
+}
+
+/**
+ * 운영자가 추출 전에 고를 화면 크기 후보. 이름 → 반복 → 기본값 순으로 근거를 쌓고,
+ * 컴포넌트나 묶음으로 판단해 뺀 후보는 사유와 함께 ignoredDevices에 남긴다.
+ */
+function proposeDevices(roots: readonly SceneNode[], scanned: SceneNode[]): { devices: DeviceResult[]; ignoredDevices: IgnoredDevice[]; found: FoundScreen[] } {
+  const detect = (candidates: DeviceResult[]) => detectScreens(roots, candidates);
+  let devices = learnDevices(scanned);
+  let found = detect(devices);
+
+  // "Fold"는 폴더블 기기이면서 접기 카드의 이름이기도 했다. 근거 프레임이 전부 다른 화면 안에 있으면
+  // 그 크기는 기기가 아니라 화면 속 컴포넌트다. 버리고 한 번 더 찾는다.
+  const screenIds = new Set(found.map((screen) => screen.node.id));
+  const ignoredDevices: IgnoredDevice[] = [];
+  const kept = devices.filter((device) => {
+    const support = deviceSupport.get(device);
+    if (!support || support.some((node) => !insideAny(node, screenIds))) return true;
+    ignoredDevices.push({ device: device.device, width: device.width, height: device.height, examples: device.examples, reason: "이 크기의 기기 이름 프레임이 모두 다른 화면 안에 있어 화면 속 컴포넌트로 봤습니다." });
+    return false;
+  });
+  if (ignoredDevices.length > 0) {
+    devices = kept;
+    found = detect(devices);
+  }
+
+  // 이름으로 찾은 화면 밖에서 반복되는 크기를 더한다. 둘 다 없을 때만 모바일 기본 범위로 추측한다.
+  const learnedRepeats = learnRepeatedSizes(scanned, found, devices);
+  // Step처럼 여러 화면을 담는 묶음 프레임도 같은 크기로 반복된다. 근거 프레임 대부분이 다른 후보 크기의
+  // 프레임을 둘 이상 품고 있으면 화면이 아니라 묶음이다. 화면으로 두면 안의 화면을 전부 삼킨다.
+  const everyCandidate = [...devices, ...learnedRepeats];
+  const repeated = learnedRepeats.filter((device) => {
+    const others = everyCandidate.filter((other) => other !== device);
+    const support = deviceSupport.get(device) ?? [];
+    const holders = support.filter((node) => {
+      let inner = 0;
+      const visit = (current: SceneNode): void => {
+        for (const child of visibleChildren(current)) {
+          if (matchDevice(child, others)) { inner += 1; continue; }
+          visit(child);
+        }
+      };
+      visit(node);
+      return inner >= 2;
+    });
+    if (holders.length * 2 <= support.length) return true;
+    ignoredDevices.push({ device: device.device, width: device.width, height: device.height, examples: device.examples, reason: "이 크기의 프레임 대부분이 다른 화면 크기의 프레임을 둘 이상 품고 있어 기능 묶음으로 봤습니다." });
+    return false;
+  });
+  if (repeated.length > 0) devices = [...devices, ...repeated];
+  if (devices.length === 0) devices = defaultDevices();
+  if (repeated.length > 0 || devices[0]?.source === "default") found = detect(devices);
+  return { devices, ignoredDevices, found };
+}
+
+async function captureScreens(
+  roots: readonly SceneNode[],
+  scanned: SceneNode[],
+  options: BridgeJobOptions,
+  /** false면 화면과 묶음을 찾기만 하고 이미지는 찍지 않는다. 추출 전 확인 화면용이다. */
+  exportImages = true,
+  /** 노드 JSON에서 찾은 주석 노드 id. 이 노드들만 다시 읽어 카테고리를 얻는다. */
+  annotatedIds: ReadonlySet<string> = new Set(),
+): Promise<{ devices: DeviceResult[]; ignoredDevices: IgnoredDevice[]; screens: ScreenResult[]; groups: GroupResult[]; annotations: AnnotationResult[]; payloads: ArtifactPayload[] }> {
+  let devices: DeviceResult[];
+  let ignoredDevices: IgnoredDevice[] = [];
+  let found: FoundScreen[];
+  if (options.devices && options.devices.length > 0) {
+    // 운영자가 고른 크기가 있으면 그대로 쓴다. 스스로 다시 배우면 확인 화면에서 끈 크기가 되살아난다.
+    devices = options.devices.map((device) => ({ ...device, examples: [...device.examples], screens: 0, selected: true }));
+    found = detectScreens(roots, devices);
+  } else {
+    ({ devices, ignoredDevices, found } = proposeDevices(roots, scanned));
+  }
+
+  // 기능 묶음 = 화면을 둘 이상 품은 가장 안쪽 조상. 그보다 위는 이름 경로로 표현한다.
+  const screensPerAncestor = new Map<string, number>();
+  for (const screen of found) for (const ancestor of screen.ancestors) screensPerAncestor.set(ancestor.id, (screensPerAncestor.get(ancestor.id) ?? 0) + 1);
+  const groupOf = (screen: FoundScreen) => [...screen.ancestors].reverse().find((ancestor) => (screensPerAncestor.get(ancestor.id) ?? 0) >= 2);
+
+  const payloads: ArtifactPayload[] = [];
+  const screens: ScreenResult[] = [];
+  const groups = new Map<string, { node: SceneNode; result: GroupResult }>();
+
+  for (const [index, entry] of found.entries()) {
+    const rect = rectOf(entry.node)!;
+    const group = groupOf(entry);
+    entry.device.screens += 1;
+    const slot = `screen-${index + 1}`;
+    const result: ScreenResult = {
+      nodeId: entry.node.id,
+      nodeName: entry.node.name,
+      nodeType: entry.node.type,
+      device: entry.device.device,
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+      path: meaningfulPath(entry.ancestors),
+      groupNodeId: group?.id,
+    };
+    const viewport = exportImages ? await exportPng(entry.node, SCREEN_SCALE, SCREEN_MAX_EDGE, options.maxAssetBytes) : undefined;
+    if (viewport && "error" in viewport) result.error = viewport.error;
+    else if (viewport) {
+      payloads.push({ slot, kind: "screenshot", mimeType: "image/png", name: `${safeName(entry.node.name)}.png`, data: viewport.data });
+      result.slot = slot;
+      result.scale = viewport.scale;
+      result.renderOffset = renderOffsetOf(entry.node);
+    }
+    screens.push(result);
+
+    if (group) {
+      let known = groups.get(group.id);
+      if (!known) {
+        const groupRect = rectOf(group);
+        known = {
+          node: group,
+          result: {
+            nodeId: group.id,
+            nodeName: group.name,
+            nodeType: group.type,
+            path: meaningfulPath(entry.ancestors.slice(0, entry.ancestors.indexOf(group))),
+            width: Math.round(groupRect?.width ?? 0),
+            height: Math.round(groupRect?.height ?? 0),
+            screens: [],
+          },
+        };
+        groups.set(group.id, known);
+      }
+      const origin = rectOf(group);
+      known.result.screens.push({
+        nodeId: entry.node.id,
+        x: Math.round(rect.x - (origin?.x ?? 0)),
+        y: Math.round(rect.y - (origin?.y ?? 0)),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      });
+    }
+  }
+
+  for (const [index, { node, result }] of [...groups.values()].entries()) {
+    if (!exportImages) break;
+    const exported = await exportPng(node, 1, GROUP_MAX_EDGE, options.maxAssetBytes);
+    if ("error" in exported) { result.error = exported.error; continue; }
+    const slot = `group-${index + 1}`;
+    payloads.push({ slot, kind: "screenshot", mimeType: "image/png", name: `${safeName(node.name)}.png`, data: exported.data });
+    result.slot = slot;
+    result.scale = exported.scale;
+    result.renderOffset = renderOffsetOf(node);
+  }
+
+  // 기본 주석은 노드에 직접 붙어 있어 짝을 추측할 필요가 없다. 붙은 노드에서 위로 올라가 화면·묶음을 찾는다.
+  const annotations: AnnotationResult[] = [];
+  if (exportImages) {
+    const screenById = new Map(found.map((entry) => [entry.node.id, entry]));
+    for (const id of annotatedIds) {
+      const resolved = await figma.getNodeByIdAsync(id);
+      if (!resolved || resolved.type === "PAGE" || resolved.type === "DOCUMENT") continue;
+      const node = resolved as SceneNode;
+      const list = annotationsOf(node);
+      if (list.length === 0) continue;
+      let screen: FoundScreen | undefined;
+      let groupNode: SceneNode | undefined;
+      for (let current: BaseNode | null = node; current && current.type !== "PAGE" && current.type !== "DOCUMENT"; current = current.parent) {
+        screen = screenById.get(current.id);
+        if (screen) break;
+        if (!groupNode && groups.has(current.id)) groupNode = groups.get(current.id)!.node;
+      }
+      const container = screen?.node ?? groupNode;
+      const own = rectOf(node);
+      const origin = container ? rectOf(container) : undefined;
+      const rect = own ? { x: Math.round(own.x - (origin?.x ?? 0)), y: Math.round(own.y - (origin?.y ?? 0)), width: Math.round(own.width), height: Math.round(own.height) } : undefined;
+      for (const annotation of list) {
+        annotations.push({
+          nodeId: node.id,
+          nodeName: node.name,
+          nodeType: node.type,
+          label: annotation.label || undefined,
+          labelMarkdown: annotation.labelMarkdown || undefined,
+          categoryId: annotation.categoryId || undefined,
+          properties: annotation.properties?.length ? annotation.properties.map((property) => property.type) : undefined,
+          screenNodeId: screen?.node.id,
+          groupNodeId: screen ? groupOf(screen)?.id : groupNode?.id,
+          rect,
+        });
+      }
+    }
+  }
+
+  return { devices, ignoredDevices, screens, groups: [...groups.values()].map(({ result }) => result), annotations, payloads };
 }
 
 /** 담지 못한 에셋의 사유별 집계. 침묵하면 무엇을 잃었는지 알 길이 없다. */
@@ -380,8 +887,30 @@ async function extractNode(job: Extract<BridgeJob, { type: "extract_node" }>): P
 async function extractPage(job: Extract<BridgeJob, { type: "extract_page" }>): Promise<{ result: PluginResult; payloads: ArtifactPayload[] }> {
   await figma.currentPage.loadAsync();
   const page = figma.currentPage;
+  if (job.options.expectedPageId && page.id !== job.options.expectedPageId) {
+    throw new Error(`화면 크기 후보를 찾은 페이지와 지금 열린 페이지(${page.name})가 다릅니다. Trace Studio에서 후보를 다시 찾아 주세요.`);
+  }
+  if (job.options.scanOnly) {
+    // 확인 화면용 스캔. 노드를 세고 후보를 계산할 뿐 JSON 직렬화와 이미지 내보내기는 하지 않아 빠르다.
+    const scanned: SceneNode[] = [];
+    let nodeCount = 0;
+    for (const node of page.children) nodeCount += countSceneNodes(node, SCAN_CEILING, scanned);
+    const captured = await captureScreens(page.children, scanned, job.options, false);
+    return {
+      result: {
+        scope: "current_page",
+        nodeCount,
+        partial: false,
+        meta: pluginMeta(),
+        page: { id: page.id, name: page.name, nodes: [], devices: captured.devices, ignoredDevices: captured.ignoredDevices.length ? captured.ignoredDevices : undefined, screens: captured.screens, groups: captured.groups },
+        artifacts: [],
+      },
+      payloads: [],
+    };
+  }
   const payloads: ArtifactPayload[] = [];
   const pageNodes: PageNodeResult[] = [];
+  const annotatedIds = new Set<string>();
   const scanned: SceneNode[] = [];
   let nodeCount = 0;
   let omittedNodes = 0;
@@ -396,6 +925,7 @@ async function extractPage(job: Extract<BridgeJob, { type: "extract_page" }>): P
       const exported = await node.exportAsync({ format: "JSON_REST_V1" });
       const wrapper = isRecord(exported) && isRecord(exported.document) ? exported : { document: exported };
       const document = wrapper.document as Record<string, unknown>;
+      collectAnnotatedIds(document, annotatedIds);
       // 예산을 넘으면 노드 경계에서 나눈다. 조각마다 유효한 JSON이라 그대로 KB에 넣을 수 있다.
       const split = splitIntoParts(document, job.options.maxJsonBytes);
       const preview = await screenshot(node, job.options.maxDimension, job.options.maxAssetBytes, screenshotSlot);
@@ -432,6 +962,9 @@ async function extractPage(job: Extract<BridgeJob, { type: "extract_page" }>): P
       omittedNodes += 1;
     }
   }
+  const captured = await captureScreens(page.children, scanned, job.options, true, annotatedIds);
+  const categories = captured.annotations.length ? await annotationCategories() : [];
+  payloads.push(...captured.payloads);
   payloads.push(...await sourceAssets(scanned, job.options));
   const partial = pageNodes.some((node) => node.partial || Boolean(node.error));
   return {
@@ -441,7 +974,7 @@ async function extractPage(job: Extract<BridgeJob, { type: "extract_page" }>): P
       partial,
       omittedNodes: omittedNodes || undefined,
       meta: pluginMeta(),
-      page: { id: page.id, name: page.name, nodes: pageNodes },
+      page: { id: page.id, name: page.name, nodes: pageNodes, devices: captured.devices, ignoredDevices: captured.ignoredDevices.length ? captured.ignoredDevices : undefined, screens: captured.screens, groups: captured.groups, annotations: captured.annotations.length ? captured.annotations : undefined, annotationCategories: categories.length ? categories : undefined },
       omittedAssets: assetLoss.cap + assetLoss.oversized + assetLoss.failed > 0 ? { ...assetLoss } : undefined,
       artifacts: payloads.map(({ data, ...artifact }) => ({ ...artifact, bytes: data.byteLength })),
     },
