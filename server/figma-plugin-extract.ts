@@ -1,4 +1,4 @@
-import { strToU8 } from "fflate";
+import { strFromU8, strToU8 } from "fflate";
 import { performance } from "node:perf_hooks";
 import { buildSemanticHints, loadFigmaHistory, loadFigmaRestMetadata } from "./figma-history.js";
 import { FigmaPluginBridge } from "./figma-plugin-bridge.js";
@@ -6,6 +6,7 @@ import { runPluginCodexQuestion } from "./figma-question.js";
 import { figmaRestOAuthStatus } from "./figma-rest-client.js";
 import { storeArtifact, storeBundleFile } from "./figma-run-store.js";
 import { buildScreensViewer } from "./figma-screens-viewer.js";
+import { SpecMarkCollector, type SpecAnnotationRef, type SpecScreenRef } from "./figma-spec-marks.js";
 import { parseFigmaTarget } from "./figma-target.js";
 import type {
   DesignContextPackage,
@@ -41,7 +42,7 @@ function storeScreens(
   uploads: Map<string, { data: Uint8Array; mimeType: string }>,
   run: FigmaRunRecord,
   artifactRefs: NonNullable<ExtractionEvent["artifacts"]>,
-): { summary: NonNullable<FigmaPagePackage["screens"]>; rejected: number } | undefined {
+): { summary: NonNullable<FigmaPagePackage["screens"]>; rejected: number; specRefs: { screens: SpecScreenRef[]; annotations: SpecAnnotationRef[] } } | undefined {
   const screens = page.screens ?? [];
   const groups = page.groups ?? [];
   const annotations = page.annotations ?? [];
@@ -152,7 +153,8 @@ function storeScreens(
   };
   storeBundleFile(run, indexPath, strToU8(JSON.stringify(index, null, 2)));
   // 번들을 푼 폴더에서 더블클릭으로 화면·묶음·주석을 한 번에 본다. PNG를 하나씩 열지 않아도 된다.
-  storeBundleFile(run, "screens.html", strToU8(buildScreensViewer(index, `${page.name} 화면`)));
+  // 화면 이미지와 같은 screens/에 두어 찾기 쉽게 하고, 번들 루트 기준 경로는 한 단계 위에서 읽는다.
+  storeBundleFile(run, "screens/screens.html", strToU8(buildScreensViewer(index, `${page.name} 화면`, "../")));
 
   return {
     summary: {
@@ -164,7 +166,38 @@ function storeScreens(
       indexPath,
     },
     rejected,
+    // 번호 배지 표시를 화면 이미지 위 좌표로 옮기고, 설명 문장과 주석을 대조할 때 쓴다.
+    specRefs: {
+      screens: screenEntries.map((screen) => ({
+        nodeId: screen.nodeId,
+        image: screen.images.viewport ? { scale: screen.images.viewport.scale ?? 1, offset: screen.images.viewport.offset } : undefined,
+      })),
+      annotations: annotationEntries.map((annotation) => ({ screenNodeId: annotation.screenNodeId, text: annotation.label ?? annotation.labelMarkdown ?? "" })),
+    },
   };
+}
+
+/**
+ * 번호 배지 표시와 설명 칸을 이은 spec-marks.json. 이미 저장한 노드 JSON 조각을 하나씩 읽어 가벼운 트리로 줄인 뒤 만든다.
+ * 명세 배지를 쓰지 않는 페이지면 파일을 만들지 않는다. 여기서 실패해도 추출은 멈추지 않고 사유만 남긴다.
+ */
+function storeSpecMarks(
+  run: FigmaRunRecord,
+  refs: { screens: SpecScreenRef[]; annotations: SpecAnnotationRef[] } | undefined,
+): { summary: NonNullable<FigmaPagePackage["specMarks"]> } | { error: string } | undefined {
+  try {
+    const collector = new SpecMarkCollector();
+    for (const [path, data] of run.bundleFiles) {
+      if (path.startsWith("nodes/") && path.endsWith(".json")) collector.addPart(JSON.parse(strFromU8(data)));
+    }
+    const index = collector.build({ screens: refs?.screens ?? [], annotations: refs?.annotations ?? [] });
+    if (index.summary.marks === 0 && index.summary.legends === 0) return undefined;
+    const indexPath = "spec-marks.json";
+    if (!storeBundleFile(run, indexPath, strToU8(JSON.stringify(index, null, 2)))) return { error: "실행당 용량 상한으로 spec-marks.json을 저장하지 못했습니다." };
+    return { summary: { ...index.summary, indexPath } };
+  } catch (error) {
+    return { error: `번호 배지 색인을 만들지 못했습니다: ${error instanceof Error ? error.message : String(error)}` };
+  }
 }
 
 /**
@@ -382,6 +415,8 @@ export async function runPluginFigmaExtraction(
   // 화면 단위 이미지. 최상위 노드 한 장은 페이지 배치도로 남기고, 화면을 읽는 이미지는 여기서 따로 둔다.
   const screenIndex = completed.result.page ? storeScreens(completed.result.page, completed.artifacts, run, artifactRefs) : undefined;
   if (screenIndex) storeRejected += screenIndex.rejected;
+  // 노드 JSON 조각이 모두 저장된 뒤에 만든다. 조각을 이어 붙여야 설명 칸과 표시의 공통 조상을 본다.
+  const specMarks = completed.result.page ? storeSpecMarks(run, screenIndex?.specRefs) : undefined;
 
   for (const artifact of completed.result.artifacts) {
     if (artifact.kind === "json" || artifact.kind === "screenshot" && completed.result.page) continue;
@@ -424,6 +459,9 @@ export async function runPluginFigmaExtraction(
   // 화면 이미지가 빠지면 KB에서 그 화면이 통째로 사라진다. screens.json을 열지 않아도 보이게 한다.
   const screenNote = screenIndex ? `화면 ${screenIndex.summary.total}개(${Object.entries(screenIndex.summary.byDevice).map(([device, count]) => `${device} ${count}`).join(", ")}), 기능 묶음 ${screenIndex.summary.groups}장, 주석 ${screenIndex.summary.annotations}건을 저장했습니다.${screenIndex.summary.failed ? ` ${screenIndex.summary.failed}건은 이미지를 만들지 못했습니다(screens.json의 error 참고).` : ""}` : undefined;
   if (storeRejected) assetNotes.push(`실행당 용량 상한으로 ${storeRejected}개`);
+  const specNote = specMarks && "summary" in specMarks
+    ? `번호 배지 표시 ${specMarks.summary.marks}개를 설명 칸 ${specMarks.summary.legends}개와 이었습니다(확정 ${specMarks.summary.linked}, 확인 필요 ${specMarks.summary.ambiguous}, 설명 없음 ${specMarks.summary.unlinked}; spec-marks.json).`
+    : specMarks?.error;
 
   await finishEvent(artifactStep, {
     state: completed.result.partial || assetNotes.length > 0 || Boolean(screenIndex?.summary.failed) || completed.result.artifacts.some((artifact) => !completed.artifacts.has(artifact.slot)) ? "warning" : "success",
@@ -435,6 +473,7 @@ export async function runPluginFigmaExtraction(
       assetNotes.length > 0 ? `에셋 ${assetNotes.join(", ")}를 담지 못했습니다.` : undefined,
       dedupNote,
       screenNote,
+      specNote,
     ].filter(Boolean).join(" ") || undefined,
   });
 
@@ -454,6 +493,7 @@ export async function runPluginFigmaExtraction(
         omitted: { cap: lost?.cap ?? 0, oversized: lost?.oversized ?? 0, failed: lost?.failed ?? 0, storeRejected },
       },
       screens: screenIndex?.summary,
+      specMarks: specMarks && "summary" in specMarks ? specMarks.summary : undefined,
       provenance: [
         { source: "plugin", detail: "열린 Figma 파일의 현재 페이지와 최상위 프레임 JSON·PNG·asset을 읽었습니다." },
         { source: "figma_rest", detail: "Figma REST API에서 파일 metadata, 전체 댓글, 버전 목록을 읽었습니다." },
