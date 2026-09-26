@@ -56,8 +56,11 @@ export function buildFigmaRunZip(run: FigmaRunRecord): Uint8Array {
         ...(run.pagePackage.screens ? [
           "- `screens/<기기>/` — 화면별 PNG(2배). Figma 화면에서 보이는 그대로이며, 뷰포트가 가린 스크롤 영역은 노드 JSON에만 있습니다.",
           "- `groups/` — 화면을 둘 이상 품은 기능 묶음 PNG.",
-          "- `screens.html` — 압축을 푼 폴더에서 더블클릭해 화면·기능 묶음·주석 위치를 보는 뷰어. 인터넷 연결 없이 열립니다.",
+          "- `screens/screens.html` — 압축을 푼 폴더에서 더블클릭해 화면·기능 묶음·주석 위치를 보는 뷰어. 인터넷 연결 없이 열립니다.",
           "- `screens.json` — 화면·기능 묶음 색인과 학습한 화면 크기, 묶음 이미지 위 화면 좌표, Figma 기본 주석(카테고리·붙은 화면·이미지 위 위치). 이미지 원점 보정값(offset)은 모든 imageRect에 반영되어 있습니다.",
+        ] : []),
+        ...(run.pagePackage.specMarks ? [
+          "- `spec-marks.json` — 화면 위 번호 배지(01, E1 …)와 같은 번호의 설명 칸을 이은 색인. 설명 칸은 자기가 맡은 영역의 표시만 설명하며(`layout.side`는 이 파일에서 배운 설명 방향), 근거가 뚜렷한 짝만 `linked`로 확정합니다. 영역 안 후보를 가르지 못하면 `ambiguous`, 영역 안에 같은 번호 설명이 없으면 `unlinked`입니다. 설명 원문은 목록 서식을 되살린 마크다운입니다.",
         ] : []),
         "- `assets/` — 원본 이미지와 SVG. 내용이 같으면 파일 하나로 합쳤습니다.",
         "- `assets/index.json` — 각 에셋을 쓰는 노드 목록(`usages`).",

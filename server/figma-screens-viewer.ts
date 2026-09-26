@@ -2,8 +2,11 @@
  * 번들을 푼 폴더에서 더블클릭으로 여는 화면 뷰어. 서버·네트워크 없이 file://로 열려야 하므로
  * screens.json 내용을 페이지에 박아 넣고, 이미지는 번들 안 상대 경로로 읽는다.
  * 폴더의 PNG를 하나씩 여는 대신 "어느 기능 묶음의 어느 화면이고, 주석이 어디를 가리키는가"를 한 화면에서 본다.
+ *
+ * 색인의 이미지 경로는 번들 루트 기준(`screens/…`, `groups/…`)이다. `root`는 뷰어 파일에서 번들 루트까지의
+ * 상대 경로로, 뷰어를 `screens/`에 두면 `"../"`다.
  */
-export function buildScreensViewer(index: unknown, title: string): string {
+export function buildScreensViewer(index: unknown, title: string, root: string): string {
   // </script>가 데이터에 섞여 들어가 스크립트를 닫지 않게 한다.
   const data = JSON.stringify(index).replace(/</g, "\\u003c");
   const safeTitle = title.replace(/[<>&"]/g, "");
@@ -98,6 +101,8 @@ for (const a of annotations) {
 let view = "screens";
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const ROOT = ${JSON.stringify(root)};
+const src = (path) => esc(ROOT + path);
 const text = (a) => a.label || a.labelMarkdown || "";
 
 $("stats").textContent = "화면 " + screens.length + " · 기능 묶음 " + groups.length + " · 주석 " + annotations.length;
@@ -117,7 +122,7 @@ function card(s) {
   const img = s.images && s.images.viewport;
   const n = (notesByScreen.get(s.nodeId) || []).length;
   return '<button class="card" type="button" data-screen="' + esc(s.nodeId) + '">' +
-    '<div class="thumb">' + (img ? '<img loading="lazy" alt="" src="' + esc(img.path) + '">' : '<span class="warn">이미지 없음</span>') + "</div>" +
+    '<div class="thumb">' + (img ? '<img loading="lazy" alt="" src="' + src(img.path) + '">' : '<span class="warn">이미지 없음</span>') + "</div>" +
     "<b>" + esc(s.name) + "</b><small>" + esc(s.device) + " · " + s.size.width + " × " + s.size.height + "</small>" +
     (n ? '<span class="badge">주석 ' + n + "</span>" : "") + "</button>";
 }
@@ -139,7 +144,7 @@ function render() {
     const shown = groups.filter((g) => !q || [g.name, (g.path || []).join(" ")].join(" ").toLowerCase().includes(q));
     main.innerHTML = shown.length ? '<div class="grid">' + shown.map((g) =>
       '<button class="card" type="button" data-group="' + esc(g.nodeId) + '"><div class="thumb">' +
-      (g.image ? '<img loading="lazy" alt="" src="' + esc(g.image.path) + '">' : '<span class="warn">이미지 없음</span>') +
+      (g.image ? '<img loading="lazy" alt="" src="' + src(g.image.path) + '">' : '<span class="warn">이미지 없음</span>') +
       "</div><b>" + esc(g.name) + "</b><small>화면 " + g.screens.length + "개 · " + g.size.width + " × " + g.size.height + "</small></button>").join("") + "</div>"
       : '<p class="empty">조건에 맞는 기능 묶음이 없습니다.</p>';
   }
@@ -186,12 +191,12 @@ function openScreen(id) {
   const img = s.images && s.images.viewport;
   const notes = notesByScreen.get(id) || [];
   const g = groupById.get(s.groupNodeId);
-  $("stage").innerHTML = img ? '<div class="frame"><img alt="' + esc(s.name) + '" src="' + esc(img.path) + '"></div>' : '<p class="warn">' + esc(s.error || "이미지 없음") + "</p>";
+  $("stage").innerHTML = img ? '<div class="frame"><img alt="' + esc(s.name) + '" src="' + src(img.path) + '"></div>' : '<p class="warn">' + esc(s.error || "이미지 없음") + "</p>";
   $("side").innerHTML = '<button class="close" type="button" data-close>닫기</button><h3>' + esc(s.name) + "</h3>" +
     "<dl><dt>기기</dt><dd>" + esc(s.device) + "</dd><dt>크기</dt><dd>" + s.size.width + " × " + s.size.height + (img ? " (이미지 " + img.scale + "배)" : "") + "</dd>" +
     "<dt>노드</dt><dd>" + esc(s.nodeId) + "</dd><dt>경로</dt><dd>" + esc((s.path || []).join(" › ") || "-") + "</dd>" +
     (g ? '<dt>기능 묶음</dt><dd><a href="#" data-open-group="' + esc(g.nodeId) + '">' + esc(g.name) + "</a></dd>" : "") +
-    (img ? '<dt>이미지</dt><dd><a href="' + esc(img.path) + '" target="_blank">원본 열기</a></dd>' : "") + "</dl>" +
+    (img ? '<dt>이미지</dt><dd><a href="' + src(img.path) + '" target="_blank">원본 열기</a></dd>' : "") + "</dl>" +
     "<b>주석 " + notes.length + "건</b>" + (notes.length ? "" : '<p class="note"><small>이 화면에 붙은 Figma 주석이 없습니다.</small></p>') +
     notes.map((a, i) => '<div class="note" data-i="' + i + '" data-activate="' + i + '"><span class="cat">' + (i + 1) + ". " + esc(a.category || "카테고리 없음") + "</span><p>" + esc(text(a)) + "</p><small>" + esc(a.nodeName) + " · " + esc(a.nodeType) + "</small></div>").join("");
   show();
@@ -202,7 +207,7 @@ function openGroup(id) {
   const g = groupById.get(id);
   if (!g) return;
   const notes = notesByGroup.get(id) || [];
-  $("stage").innerHTML = g.image ? '<div class="frame"><img alt="' + esc(g.name) + '" src="' + esc(g.image.path) + '"></div>' : '<p class="warn">' + esc(g.error || "이미지 없음") + "</p>";
+  $("stage").innerHTML = g.image ? '<div class="frame"><img alt="' + esc(g.name) + '" src="' + src(g.image.path) + '"></div>' : '<p class="warn">' + esc(g.error || "이미지 없음") + "</p>";
   $("side").innerHTML = '<button class="close" type="button" data-close>닫기</button><h3>' + esc(g.name) + "</h3>" +
     "<dl><dt>크기</dt><dd>" + g.size.width + " × " + g.size.height + (g.image ? " (이미지 " + (+g.image.scale).toFixed(2) + "배)" : "") + "</dd><dt>경로</dt><dd>" + esc((g.path || []).join(" › ") || "-") + "</dd></dl>" +
     "<b>화면 " + g.screens.length + "개</b>" +

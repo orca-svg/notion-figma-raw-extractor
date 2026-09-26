@@ -210,6 +210,8 @@ export type FigmaPagePackage = {
   assets?: { stored: number; deduplicated: number; omitted: { cap: number; oversized: number; failed: number; storeRejected: number } };
   /** 화면·기능 묶음 이미지 요약. 상세는 indexPath의 screens.json에 있다. */
   screens?: { total: number; byDevice: Record<string, number>; groups: number; failed: number; annotations: number; indexPath: string };
+  /** 번호 배지 표시와 설명 칸의 짝 요약. 상세는 indexPath의 spec-marks.json에 있다. 명세 배지를 쓰지 않는 페이지면 없다. */
+  specMarks?: { legends: number; marks: number; linked: number; ambiguous: number; unlinked: number; onScreen: number; withRegion: number; indexPath: string };
   provenance: Array<{ source: "plugin" | "figma_rest"; detail: string }>;
 };
 

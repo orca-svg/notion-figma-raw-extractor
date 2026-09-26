@@ -265,6 +265,46 @@ describe("Figma Plugin pairing bridge", () => {
     expect(JSON.parse(strFromU8(zip["nodes/Home-1-2.json"]))).toMatchObject({ id: "1:2" });
     expect(zip["screenshots/Home-1-2.png"]).toEqual(png);
     expect(JSON.parse(strFromU8(zip["metadata/comments.json"])).comments[0].id).toBe("comment-1");
+    // 번호 배지를 쓰지 않는 페이지에는 spec-marks.json을 만들지 않는다.
+    expect(zip["spec-marks.json"]).toBeUndefined();
+    expect(run.pagePackage?.specMarks).toBeUndefined();
+  });
+
+  it("현재 페이지 추출은 번호 배지 표시와 설명 칸을 spec-marks.json으로 잇는다", async () => {
+    const bridge = new FigmaPluginBridge();
+    const connection = connect(bridge);
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({})));
+    const input: FigmaExtractionInput = { target: "", targetMode: "link", scope: "current_page", transport: "plugin" };
+    const run = createFigmaRun("owner", input);
+    const execution = runPluginFigmaExtraction(bridge, "owner", { accessToken: "access", expiresAt: Date.now() + 10 * 60_000 }, input, run, (event) => upsertRunEvent(run, event));
+    const job = await bridge.nextJob(connection.sessionToken, undefined, 1_000);
+    const box = (x: number, y: number, width: number, height: number) => ({ absoluteBoundingBox: { x, y, width, height } });
+    const badge = (id: string, label: string, x: number, y: number) => ({ id, name: "Badge", type: "INSTANCE", componentId: "c:1", ...box(x, y, 24, 24), children: [{ id: `${id};t`, name: "t", type: "TEXT", characters: label, ...box(x, y, 16, 16) }] });
+    const entry = (id: string, label: string, body: string, y: number) => ({ id, name: "Content", type: "FRAME", ...box(500, y, 440, 60), children: [badge(`${id}-b`, label, 500, y), { id: `${id}-t`, name: "Text", type: "TEXT", characters: body, ...box(540, y, 400, 60) }] });
+    const nodeJson = strToU8(JSON.stringify({
+      document: { id: "1:2", name: "03 현재가 > 031 공통정의", type: "FRAME", ...box(0, 0, 1200, 900), children: [
+        { id: "2:1", name: "Mobile", type: "FRAME", ...box(0, 0, 375, 812), children: [] },
+        { id: "2:2", name: "Description", type: "GROUP", ...box(-12, 0, 400, 300), children: [badge("3:1", "01", -12, 100), badge("3:2", "02", -12, 200)] },
+        { id: "2:3", name: "Description", type: "FRAME", ...box(500, 0, 480, 200), children: [entry("4:1", "01", "□ 상단 정보 영역", 0), entry("4:2", "02", "□ 차트 영역", 80)] },
+      ] },
+      components: { "c:1": { name: "Dark line=Description", componentSetId: "cs:1" } },
+      componentSets: { "cs:1": { name: "Badge_dark outline" } },
+    }));
+    bridge.uploadArtifact(connection.sessionToken, job!.id, "node-json-1", "application/json", nodeJson);
+    bridge.submitResult(connection.sessionToken, job!.id, {
+      scope: "current_page",
+      nodeCount: 12,
+      partial: false,
+      meta: { pluginVersion: "1.1.0", editorType: "figma", fileKey: target.fileKey, pageId: "0:1", pageName: "Main" },
+      page: { id: "0:1", name: "Main", nodes: [{ nodeId: "1:2", nodeName: "Board", nodeType: "FRAME", jsonSlot: "node-json-1", nodeCount: 12, partial: false }] },
+      artifacts: [{ slot: "node-json-1", kind: "json", mimeType: "application/json", name: "Board.json", bytes: nodeJson.byteLength }],
+    });
+    await execution;
+    expect(run.pagePackage?.specMarks).toMatchObject({ legends: 2, marks: 2, linked: 2, ambiguous: 0, unlinked: 0, indexPath: "spec-marks.json" });
+    const specMarks = JSON.parse(strFromU8(unzipSync(buildFigmaRunZip(run))["spec-marks.json"]));
+    expect(specMarks.marks.map((mark: { label: string; legendNodeId: string }) => [mark.label, mark.legendNodeId])).toEqual([["01", "4:1-b"], ["02", "4:2-b"]]);
+    expect(specMarks.legends[0]).toMatchObject({ label: "01", title: "□ 상단 정보 영역" });
+    expect(run.events.find((event) => event.group === "artifacts")?.message).toContain("번호 배지 표시 2개를 설명 칸 2개와 이었습니다");
   });
 
   it("화면·전체 본문·기능 묶음 이미지를 기기별 폴더와 screens.json 색인으로 조립한다", async () => {
@@ -373,8 +413,12 @@ describe("Figma Plugin pairing bridge", () => {
     expect(index.annotations[1].category).toBeUndefined();
     expect(run.pagePackage?.screens).toMatchObject({ annotations: 2 });
     // 폴더에서 바로 여는 뷰어가 같은 색인을 품는다. 데이터 속 <가 스크립트를 닫지 못하게 이스케이프한다.
-    const viewer = strFromU8(unzipSync(buildFigmaRunZip(run))["screens.html"]);
+    // 뷰어는 화면 이미지 곁인 screens/에 두고, 번들 루트 기준 경로는 한 단계 위로 올려 읽는다.
+    const files = unzipSync(buildFigmaRunZip(run));
+    expect(files["screens.html"]).toBeUndefined();
+    const viewer = strFromU8(files["screens/screens.html"]);
     expect(viewer).toContain("screens/mobile/Home-2-2.png");
+    expect(viewer).toContain('const ROOT = "../";');
     expect(viewer).toContain("국내 종목에만 노출");
     expect(viewer.match(/<\/script>/g)).toHaveLength(2);
   });
