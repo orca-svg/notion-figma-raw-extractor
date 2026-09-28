@@ -26,6 +26,7 @@ const SOURCE_LABEL: Record<FigmaScreenDevice["source"], { label: string; hint: s
   name: { label: "이름", hint: "이름에 기기 단어(Mobile·Desktop 등)가 붙은 프레임" },
   repeat: { label: "반복", hint: "이름은 없지만 화면 밖에서 3번 이상 반복된 프레임 크기" },
   default: { label: "추정", hint: "근거가 없어 쓴 모바일 기본 범위" },
+  size: { label: "직접", hint: "자동으로 찾은 화면이 없어 보여 주는, 이 페이지에 두 번 이상 쓰인 프레임 크기" },
 };
 
 const DEVICE_LABEL: Record<string, string> = { mobile: "모바일", fold: "폴드", tablet: "태블릿", desktop: "데스크톱" };
@@ -56,6 +57,10 @@ function deviceTitle(device: FigmaScreenDevice): string {
     return name ? `${name} 등 반복 프레임` : "이름 없이 반복된 프레임";
   }
   if (device.source === "default") return `${kind ?? "모바일"} 화면 (기본 범위)`;
+  if (device.source === "size") {
+    const name = representative(device);
+    return name ? `${name} 등 같은 크기 프레임` : "같은 크기 프레임";
+  }
   return `${kind ?? device.device} 화면`;
 }
 
@@ -70,9 +75,27 @@ export function FigmaTargetPanel({ options, onChange, onRun, onAsk, running, con
   const patch = (next: Partial<FigmaExtractionOptions>) => onChange({ ...options, ...next });
   const ready = connected && metadataConnected;
   const stale = Boolean(proposal && openPageId && proposal.pageId !== openPageId);
-  const chosen = proposal?.devices.filter((device) => selectedDevices.includes(deviceKey(device))) ?? [];
+  const chosen = [...(proposal?.devices ?? []), ...(proposal?.sizeCandidates ?? [])].filter((device) => selectedDevices.includes(deviceKey(device)));
   const chosenScreens = chosen.reduce((sum, device) => sum + device.screens, 0);
-  const canRun = ready && (options.scope === "current_page" ? Boolean(proposal) && !stale && chosen.length > 0 : Boolean(options.target));
+  // 고른 크기가 없어도 추출은 된다. 화면 이미지만 빠지고 노드 JSON·주석·배치도·원본 이미지는 그대로 받는다.
+  const canRun = ready && (options.scope === "current_page" ? Boolean(proposal) && !stale : Boolean(options.target));
+  const sizeRow = (device: FigmaScreenDevice) => {
+    const key = deviceKey(device);
+    const checked = selectedDevices.includes(key);
+    return (
+      <li key={key} className={checked ? "on" : "off"}>
+        <label>
+          <input type="checkbox" checked={checked} onChange={() => onToggleDevice(key)} disabled={running} />
+          <span className={`source-badge ${device.source}`} title={SOURCE_LABEL[device.source].hint}>{SOURCE_LABEL[device.source].label}</span>
+          <span className="screen-size-main">
+            <span className="screen-size-title"><strong>{deviceTitle(device)}</strong><span className="screen-size-dim">{sizeLabel(device)}</span></span>
+            <small>{device.examples.length ? `예: ${device.examples.join(" · ")}` : SOURCE_LABEL[device.source].hint}</small>
+          </span>
+          <span className="screen-size-count">{device.screens}개</span>
+        </label>
+      </li>
+    );
+  };
   const canAsk = ready && Boolean(options.target) && Boolean(options.question?.trim());
   const canInterpret = ready && Boolean(options.target);
   const devices = [...(proposal?.devices ?? [])].sort((a, b) => (a.source === b.source ? b.screens - a.screens : a.source === "name" ? -1 : b.source === "name" ? 1 : 0));
@@ -112,29 +135,19 @@ export function FigmaTargetPanel({ options, onChange, onRun, onAsk, running, con
                 <b>{proposal.pageName.trim()}</b> 페이지 · 노드 {proposal.nodeCount.toLocaleString()}개 · 기능 묶음 {proposal.groups}개
               </p>
               {stale ? <p className="run-blocker-note" role="status"><strong>Figma에서 다른 페이지를 열었습니다.</strong> 후보는 이전 페이지 기준이므로 다시 찾아 주세요.</p> : null}
-              {devices.length === 0 ? <p className="screen-review-empty">화면으로 볼 크기를 찾지 못했습니다.</p> : (
-                <ul className="screen-size-list">
-                  {devices.map((device) => {
-                    const key = deviceKey(device);
-                    const checked = selectedDevices.includes(key);
-                    return (
-                      <li key={key} className={checked ? "on" : "off"}>
-                        <label>
-                          <input type="checkbox" checked={checked} onChange={() => onToggleDevice(key)} disabled={running} />
-                          <span className={`source-badge ${device.source}`} title={SOURCE_LABEL[device.source].hint}>{SOURCE_LABEL[device.source].label}</span>
-                          <span className="screen-size-main">
-                            <span className="screen-size-title"><strong>{deviceTitle(device)}</strong><span className="screen-size-dim">{sizeLabel(device)}</span></span>
-                            <small>{device.examples.length ? `예: ${device.examples.join(" · ")}` : SOURCE_LABEL[device.source].hint}</small>
-                          </span>
-                          <span className="screen-size-count">{device.screens}개</span>
-                        </label>
-                      </li>
-                    );
-                  })}
-                </ul>
+              {devices.length > 0 ? <ul className="screen-size-list">{devices.map(sizeRow)}</ul> : (
+                <div className="screen-review-none" role="status">
+                  <p><strong>이 페이지에서 기기 화면 크기를 찾지 못했습니다.</strong> 팝업·토스트·붙여 넣은 캡처로 된 명세 보드처럼 기기 화면이 없는 페이지일 수 있습니다.</p>
+                  {proposal.sizeCandidates.length > 0 ? (
+                    <>
+                      <p>화면처럼 찍을 크기가 있으면 아래에서 직접 고르세요. 고르지 않아도 추출할 수 있습니다.</p>
+                      <ul className="screen-size-list">{proposal.sizeCandidates.map(sizeRow)}</ul>
+                    </>
+                  ) : <p>두 번 이상 쓰인 큰 프레임도 없습니다. 화면 이미지 없이 추출할 수 있습니다.</p>}
+                </div>
               )}
               <p className="screen-review-total" role="status">
-                {chosen.length > 0 ? <>선택한 {chosen.length}개 크기로 화면 약 <b>{chosenScreens}개</b>를 찍습니다.</> : "선택한 크기가 없습니다. 하나 이상 켜 주세요."}
+                {chosen.length > 0 ? <>선택한 {chosen.length}개 크기로 화면 약 <b>{chosenScreens}개</b>를 찍습니다.</> : "고른 크기가 없어 화면 이미지 없이 추출합니다. 노드 JSON·주석·페이지 배치도·원본 이미지는 그대로 받습니다."}
               </p>
               {proposal.ignoredDevices.length > 0 ? (
                 <details className="screen-review-ignored">
@@ -179,7 +192,7 @@ export function FigmaTargetPanel({ options, onChange, onRun, onAsk, running, con
             : !metadataConnected
               ? "파일 메타데이터 토큰을 연결하세요"
               : options.scope === "current_page"
-                ? proposal ? `선택한 크기로 현재 페이지 ZIP 추출` : "먼저 화면 크기 후보를 찾으세요"
+                ? !proposal ? "먼저 화면 크기 후보를 찾으세요" : chosen.length > 0 ? "선택한 크기로 현재 페이지 ZIP 추출" : "화면 이미지 없이 현재 페이지 ZIP 추출"
                 : "Plugin으로 최신 노드 추출"}
       </button>
       {options.scope === "node" ? (

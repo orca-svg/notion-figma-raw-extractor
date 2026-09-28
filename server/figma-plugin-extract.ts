@@ -221,6 +221,7 @@ export async function scanPluginScreens(bridge: FigmaPluginBridge, ownerSessionI
     pageName: page.name,
     nodeCount: completed.result.nodeCount,
     devices: page.devices ?? [],
+    sizeCandidates: page.sizeCandidates ?? [],
     ignoredDevices: page.ignoredDevices ?? [],
     screens: screens.length,
     groups: page.groups?.length ?? 0,

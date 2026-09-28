@@ -565,6 +565,9 @@ footer div { display: flex; gap: 18px; }
 .source-badge.name { color: #4d3aa4; background: #ebe7fb; }
 .source-badge.repeat { color: #7a4d0c; background: #f6ead7; }
 .source-badge.default { color: #6f554f; background: #f6e7e4; }
+.source-badge.size { color: #1f5f73; background: #e2f1f5; }
+.screen-review-none { display: grid; gap: 6px; }
+.screen-review-none p { margin: 0; color: var(--graphite); font-size: 12px; line-height: 1.5; }
 .screen-review-total { margin: 8px 0 0; color: var(--graphite); font-size: 10px; }
 .screen-review-total b { color: var(--figma); }
 .screen-review-ignored { margin-top: 8px; }

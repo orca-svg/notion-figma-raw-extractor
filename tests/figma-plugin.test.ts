@@ -460,6 +460,8 @@ describe("추출 전 화면 크기 확인", () => {
       pageName: "주식",
       nodeCount: 900,
       devices: [mobile, popup],
+      // 자동 후보가 화면을 찾았으므로 직접 고르기 후보는 비어 있다.
+      sizeCandidates: [],
       ignoredDevices: [expect.objectContaining({ device: "fold" })],
       screens: 2,
       groups: 1,
@@ -479,6 +481,24 @@ describe("추출 전 화면 크기 확인", () => {
     bridge.submitResult(connection.sessionToken, job!.id, {
       scope: "current_page", nodeCount: 0, partial: false,
       meta: { pluginVersion: "1.2.0", editorType: "figma", fileKey: target.fileKey, pageId: "0:1", pageName: "Main" },
+      page: { id: "0:1", name: "Main", nodes: [] },
+      artifacts: [],
+    });
+    await execution;
+  });
+
+  it("아무 크기도 고르지 않은 선택(빈 목록)을 그대로 넘겨 화면 이미지 없이 추출하게 한다", async () => {
+    const bridge = new FigmaPluginBridge();
+    const connection = connect(bridge);
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({})));
+    const input: FigmaExtractionInput = { target: "", targetMode: "link", scope: "current_page", transport: "plugin", screenDevices: [] };
+    const run = createFigmaRun("owner", input);
+    const execution = runPluginFigmaExtraction(bridge, "owner", { accessToken: "access", expiresAt: Date.now() + 10 * 60_000 }, input, run, (event) => upsertRunEvent(run, event));
+    const job = await bridge.nextJob(connection.sessionToken, undefined, 1_000);
+    expect(job?.options.devices).toEqual([]);
+    bridge.submitResult(connection.sessionToken, job!.id, {
+      scope: "current_page", nodeCount: 0, partial: false,
+      meta: { pluginVersion: "1.3.0", editorType: "figma", fileKey: target.fileKey, pageId: "0:1", pageName: "Main" },
       page: { id: "0:1", name: "Main", nodes: [] },
       artifacts: [],
     });
