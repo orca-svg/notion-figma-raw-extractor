@@ -105,7 +105,7 @@ export type FigmaScreenDevice = {
   minHeight: number;
   maxHeight?: number;
   /** name: 기기 이름이 붙은 프레임, repeat: 이름 없이 3번 이상 반복된 프레임 크기, default: 근거가 없어 쓴 모바일 기본 범위 */
-  source: "name" | "repeat" | "default";
+  source: "name" | "repeat" | "default" | "size";
   examples: string[];
   screens: number;
 };
@@ -117,6 +117,7 @@ export type FigmaScreenProposal = {
   pageName: string;
   nodeCount: number;
   devices: FigmaScreenDevice[];
+  sizeCandidates: FigmaScreenDevice[];
   ignoredDevices: Array<{ device: string; width?: number; height?: number; examples: string[]; reason: string }>;
   screens: number;
   groups: number;

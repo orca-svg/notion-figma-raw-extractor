@@ -272,6 +272,59 @@ describe("화면·기능 묶음 스크린샷", () => {
     expect(result.screens.map((screen: any) => screen.nodeId)).toEqual(["15:0", "15:1", "15:2", "15:9"]);
   });
 
+  // NH "개인정보 숨기기"처럼 기기 화면 없이 팝업·토스트·붙여 넣은 캡처로만 된 명세 보드.
+  function specBoard() {
+    const popupFrame = box("5:1", "거래내역", { x: 0, y: 0, width: 520, height: 600 });
+    const popupInstance = { ...box("5:2", "popup_예수금_tab1_520_full", { x: 600, y: 0, width: 520, height: 600 }), type: "INSTANCE" };
+    const toasts = [box("5:3", "Toast", { x: 0, y: 700, width: 235, height: 52 }), box("5:4", "Toast", { x: 300, y: 700, width: 235, height: 52 })];
+    const capture = { ...box("5:5", "스크린샷 2026-08-28 오전 10.11.22 1", { x: 1200, y: 0, width: 521, height: 600 }), type: "RECTANGLE" };
+    const section = { ...box("4:1", "개인정보 가리기", { x: 0, y: 0, width: 5725, height: 1484 }, [popupFrame, popupInstance, ...toasts, capture]), type: "SECTION" };
+    return { section, popupFrame, popupInstance };
+  }
+
+  it("기기 화면이 없는 명세 보드는 두 번 이상 쓰인 큰 크기를 직접 고르기 후보로 돌려준다", async () => {
+    const { section } = specBoard();
+    const plugin = bootPlugin("figma", section);
+    await plugin.figma.ui.onmessage({ type: "job", job: { ...pageJob("design"), options: { ...pageJob("design").options, scanOnly: true } } });
+    const page = plugin.messages.at(-1).result.page;
+    // 자동 후보는 모바일 기본값뿐이고 화면이 0개라 확인 화면에서 막다른 길이 됐다.
+    expect(page.devices).toEqual([expect.objectContaining({ source: "default", screens: 0 })]);
+    // 프레임과 인스턴스를 함께 세고, 토스트(235×52)처럼 작은 조각과 한 번뿐인 캡처는 뺀다.
+    expect(page.sizeCandidates).toEqual([expect.objectContaining({ device: "size-520x600", source: "size", width: 520, height: 600, screens: 2, examples: ["거래내역", "popup_예수금_tab1_520_full"] })]);
+  });
+
+  it("자동 후보가 화면을 찾으면 직접 고르기 후보를 만들지 않는다", async () => {
+    const { step } = fixture();
+    const plugin = bootPlugin("figma", step);
+    await plugin.figma.ui.onmessage({ type: "job", job: { ...pageJob("design"), options: { ...pageJob("design").options, scanOnly: true } } });
+    expect(plugin.messages.at(-1).result.page.sizeCandidates).toBeUndefined();
+  });
+
+  it("직접 고른 크기로 팝업을 화면처럼 찍는다", async () => {
+    const { section, popupFrame, popupInstance } = specBoard();
+    const plugin = bootPlugin("figma", section);
+    const size = { device: "size-520x600", width: 520, height: 600, minWidth: 512, maxWidth: 528, minHeight: 592, maxHeight: 608, source: "size", examples: [], screens: 2 };
+    await plugin.figma.ui.onmessage({ type: "job", job: { ...pageJob("design"), options: { ...pageJob("design").options, devices: [size] } } });
+    const page = plugin.messages.at(-1).result.page;
+    expect(page.screens.map((screen: any) => [screen.nodeId, screen.device])).toEqual([["5:1", "size-520x600"], ["5:2", "size-520x600"]]);
+    expect(popupFrame.exportAsync).toHaveBeenCalledWith({ format: "PNG", constraint: { type: "SCALE", value: 2 } });
+    expect(popupInstance.exportAsync).toHaveBeenCalledWith({ format: "PNG", constraint: { type: "SCALE", value: 2 } });
+  });
+
+  it("아무 크기도 고르지 않으면 화면 이미지 없이 추출하고 크기를 다시 배우지 않는다", async () => {
+    // 빈 목록을 "고른 적 없음"으로 보면 플러그인이 크기를 다시 배워 운영자가 끈 화면을 찍는다.
+    const { step, plain, scrolling } = fixture();
+    const plugin = bootPlugin("figma", step);
+    await plugin.figma.ui.onmessage({ type: "job", job: { ...pageJob("design"), options: { ...pageJob("design").options, devices: [] } } });
+    const message = plugin.messages.at(-1);
+    expect(message.type).toBe("job-result");
+    expect(message.result.page.screens).toEqual([]);
+    expect(message.result.page.devices).toEqual([]);
+    expect(plain.exportAsync).not.toHaveBeenCalledWith({ format: "PNG", constraint: { type: "SCALE", value: 2 } });
+    expect(scrolling.exportAsync).not.toHaveBeenCalled();
+    expect(message.payloads.map((payload: any) => payload.slot).sort()).toEqual(["frame-png-1", "node-json-1"]);
+  });
+
   it("scanOnly는 이미지를 찍지 않고 화면 크기 후보와 개수만 돌려준다", async () => {
     // 운영자가 추출 전에 후보를 고르려면 먼저 무엇이 화면으로 잡힐지 빠르게 보여 줘야 한다.
     const { step, plain, scrolling } = fixture();

@@ -61,8 +61,9 @@ type DeviceResult = {
   /**
    * name: 기기 이름이 붙은 프레임에서 배움. repeat: 이름은 없지만 화면 밖에서 같은 크기가 여러 번 나옴.
    * default: 둘 다 없어 모바일 기본 범위를 씀.
+   * size: 자동 후보가 없을 때 운영자가 직접 고르라고 보여 준, 페이지에 두 번 이상 쓰인 프레임·인스턴스 크기.
    */
-  source: "name" | "repeat" | "default";
+  source: "name" | "repeat" | "default" | "size";
   examples: string[];
   screens: number;
   /** 운영자가 확인 화면에서 고른 크기로 추출했으면 true. */
@@ -131,7 +132,7 @@ type PluginResult = {
   partial: boolean;
   omittedNodes?: number;
   meta: ReturnType<typeof pluginMeta> & { nodeId?: string; nodeName?: string; nodeType?: string };
-  page?: { id: string; name: string; nodes: PageNodeResult[]; devices?: DeviceResult[]; ignoredDevices?: IgnoredDevice[]; screens?: ScreenResult[]; groups?: GroupResult[]; annotations?: AnnotationResult[]; annotationCategories?: AnnotationCategoryResult[] };
+  page?: { id: string; name: string; nodes: PageNodeResult[]; devices?: DeviceResult[]; ignoredDevices?: IgnoredDevice[]; screens?: ScreenResult[]; groups?: GroupResult[]; sizeCandidates?: DeviceResult[]; annotations?: AnnotationResult[]; annotationCategories?: AnnotationCategoryResult[] };
   /** 담지 못한 에셋의 사유별 개수. 0이면 생략한다. */
   omittedAssets?: { cap: number; oversized: number; failed: number; duplicate: number };
   artifacts: Array<Omit<ArtifactPayload, "data"> & { bytes: number }>;
@@ -575,6 +576,39 @@ function learnRepeatedSizes(nodes: SceneNode[], found: FoundScreen[], known: Dev
     });
 }
 
+/**
+ * 자동 후보가 하나도 화면을 못 찾을 때 운영자가 직접 고를 크기. 기기 화면 없이 팝업·토스트·붙여 넣은 캡처로만
+ * 된 명세 보드(NH "개인정보 숨기기")에서 확인 화면이 막다른 길이 됐다. 인스턴스도 세고 두 번이면 보여 준다.
+ */
+function sizeCandidatesOf(nodes: SceneNode[]): DeviceResult[] {
+  const sizes: Array<{ width: number; height: number; nodes: SceneNode[] }> = [];
+  for (const node of nodes) {
+    if (!isScreenCandidateType(node) || node.visible === false) continue;
+    const rect = rectOf(node);
+    // 버튼·행·칩 같은 작은 조각은 화면 후보로 의미가 없다.
+    if (!rect || rect.width < 200 || rect.height < 200) continue;
+    const size = sizes.find((candidate) => Math.abs(candidate.width - rect.width) <= DEVICE_TOLERANCE && Math.abs(candidate.height - rect.height) <= DEVICE_TOLERANCE);
+    if (size) size.nodes.push(node);
+    else sizes.push({ width: Math.round(rect.width), height: Math.round(rect.height), nodes: [node] });
+  }
+  return sizes
+    .filter((size) => size.nodes.length >= 2)
+    .sort((a, b) => b.nodes.length - a.nodes.length)
+    .slice(0, 12)
+    .map((size) => ({
+      device: `size-${size.width}x${size.height}`,
+      width: size.width,
+      height: size.height,
+      minWidth: size.width - DEVICE_TOLERANCE,
+      maxWidth: size.width + DEVICE_TOLERANCE,
+      minHeight: size.height - DEVICE_TOLERANCE,
+      maxHeight: size.height + DEVICE_TOLERANCE,
+      source: "size" as const,
+      examples: [...new Set(size.nodes.map((node) => node.name))].slice(0, 3),
+      screens: size.nodes.length,
+    }));
+}
+
 function meaningfulPath(ancestors: SceneNode[]): string[] {
   return ancestors.map((ancestor) => ancestor.name).filter((name) => name.trim() && !AUTO_NAME.test(name.trim()));
 }
@@ -650,7 +684,8 @@ async function captureScreens(
   let devices: DeviceResult[];
   let ignoredDevices: IgnoredDevice[] = [];
   let found: FoundScreen[];
-  if (options.devices && options.devices.length > 0) {
+  // 빈 목록도 운영자의 선택이다("화면 이미지 없이 추출"). 이때 스스로 다시 배우면 끈 크기가 되살아난다.
+  if (options.devices) {
     // 운영자가 고른 크기가 있으면 그대로 쓴다. 스스로 다시 배우면 확인 화면에서 끈 크기가 되살아난다.
     devices = options.devices.map((device) => ({ ...device, examples: [...device.examples], screens: 0, selected: true }));
     found = detectScreens(roots, devices);
@@ -896,13 +931,14 @@ async function extractPage(job: Extract<BridgeJob, { type: "extract_page" }>): P
     let nodeCount = 0;
     for (const node of page.children) nodeCount += countSceneNodes(node, SCAN_CEILING, scanned);
     const captured = await captureScreens(page.children, scanned, job.options, false);
+    const sizeCandidates = captured.devices.some((device) => device.screens > 0) ? [] : sizeCandidatesOf(scanned);
     return {
       result: {
         scope: "current_page",
         nodeCount,
         partial: false,
         meta: pluginMeta(),
-        page: { id: page.id, name: page.name, nodes: [], devices: captured.devices, ignoredDevices: captured.ignoredDevices.length ? captured.ignoredDevices : undefined, screens: captured.screens, groups: captured.groups },
+        page: { id: page.id, name: page.name, nodes: [], devices: captured.devices, ignoredDevices: captured.ignoredDevices.length ? captured.ignoredDevices : undefined, screens: captured.screens, groups: captured.groups, sizeCandidates: sizeCandidates.length ? sizeCandidates : undefined },
         artifacts: [],
       },
       payloads: [],

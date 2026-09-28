@@ -903,12 +903,13 @@ function readScreenDevices(value: unknown): FigmaPluginDevice[] | undefined {
       maxWidth,
       minHeight,
       maxHeight,
-      source: item.source === "name" || item.source === "repeat" ? item.source : "default",
+      source: item.source === "name" || item.source === "repeat" || item.source === "size" ? item.source : "default",
       examples: Array.isArray(item.examples) ? item.examples.filter((name): name is string => typeof name === "string").slice(0, 3).map((name) => name.slice(0, 80)) : [],
       screens: 0,
     }];
   });
-  return devices.length > 0 ? devices : undefined;
+  // 빈 목록은 "화면 이미지 없이 추출"이라는 선택이다. undefined로 바꾸면 플러그인이 크기를 다시 배운다.
+  return devices;
 }
 
 app.post("/api/figma/screens/scan", async (req, res) => {

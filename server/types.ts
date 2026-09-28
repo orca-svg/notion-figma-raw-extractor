@@ -302,7 +302,7 @@ export type FigmaPluginDevice = {
   maxWidth: number;
   minHeight: number;
   maxHeight?: number;
-  source: "name" | "repeat" | "default";
+  source: "name" | "repeat" | "default" | "size";
   examples: string[];
   screens: number;
   selected?: boolean;
@@ -366,6 +366,8 @@ export type FigmaScreenProposal = {
   pageName: string;
   nodeCount: number;
   devices: FigmaPluginDevice[];
+  /** 자동 후보가 화면을 하나도 못 찾았을 때만 채운다. 운영자가 직접 고를 크기이며 기본으로 꺼져 있다. */
+  sizeCandidates: FigmaPluginDevice[];
   ignoredDevices: FigmaPluginIgnoredDevice[];
   screens: number;
   groups: number;
@@ -378,7 +380,7 @@ export type FigmaPluginExtractionResult = {
   partial: boolean;
   omittedNodes?: number;
   meta: FigmaPluginMeta & { nodeId?: string; nodeName?: string; nodeType?: string };
-  page?: { id: string; name: string; nodes: FigmaPluginPageNodeResult[]; devices?: FigmaPluginDevice[]; ignoredDevices?: FigmaPluginIgnoredDevice[]; screens?: FigmaPluginScreen[]; groups?: FigmaPluginGroup[]; annotations?: FigmaPluginAnnotation[]; annotationCategories?: FigmaPluginAnnotationCategory[] };
+  page?: { id: string; name: string; nodes: FigmaPluginPageNodeResult[]; devices?: FigmaPluginDevice[]; ignoredDevices?: FigmaPluginIgnoredDevice[]; screens?: FigmaPluginScreen[]; groups?: FigmaPluginGroup[]; sizeCandidates?: FigmaPluginDevice[]; annotations?: FigmaPluginAnnotation[]; annotationCategories?: FigmaPluginAnnotationCategory[] };
   /** 담지 못한 에셋의 사유별 개수. 침묵하면 무엇을 잃었는지 알 길이 없다. */
   omittedAssets?: { cap: number; oversized: number; failed: number; duplicate: number };
   artifacts: Array<{ slot: string; kind: ArtifactRef["kind"] | "json"; mimeType: string; name: string; bytes: number; usages?: Array<{ nodeId: string; nodeName: string }> }>;

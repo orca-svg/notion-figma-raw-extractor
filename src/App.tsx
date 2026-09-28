@@ -316,6 +316,7 @@ export default function App() {
       const proposal = { ...scanned, devices: scanned.devices.filter((device) => device.screens > 0) };
       setScreenProposal(proposal);
       // 빠뜨리는 쪽보다 더 잡는 쪽이 운영자 눈에 띄기 쉽다. 모든 후보를 켠 채 보여 주고 끄게 한다.
+      // 직접 고르기 후보(sizeCandidates)는 근거가 약하므로 꺼 둔 채 보여 준다.
       setSelectedScreenDevices(proposal.devices.map(deviceKey));
       void refreshFigma();
     } catch (error) {
@@ -338,7 +339,8 @@ export default function App() {
       const pageRun = figmaOptions.scope === "current_page" && screenProposal;
       await streamFigmaExtraction({
         ...figmaOptions,
-        screenDevices: pageRun ? screenProposal.devices.filter((device) => selectedScreenDevices.includes(deviceKey(device))) : undefined,
+        // 빈 배열도 보낸다. "아무 크기도 고르지 않음"이어야 플러그인이 화면 이미지 없이 추출한다.
+        screenDevices: pageRun ? [...screenProposal.devices, ...screenProposal.sizeCandidates].filter((device) => selectedScreenDevices.includes(deviceKey(device))) : undefined,
         screenPageId: pageRun ? screenProposal.pageId : undefined,
       }, (event) => {
         setFigmaEvents((current) => upsertEvent(current, event));
